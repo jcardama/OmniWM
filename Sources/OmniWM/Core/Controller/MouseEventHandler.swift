@@ -4,6 +4,11 @@ import Foundation
 @MainActor
 final class MouseEventHandler {
     struct State {
+        struct LockedGestureContext {
+            let workspaceId: WorkspaceDescriptor.ID
+            let monitorId: Monitor.ID
+        }
+
         enum GesturePhase {
             case idle
             case armed
@@ -28,8 +33,7 @@ final class MouseEventHandler {
         var gestureStartX: CGFloat = 0.0
         var gestureStartY: CGFloat = 0.0
         var gestureLastDeltaX: CGFloat = 0.0
-        var gestureWorkspaceId: WorkspaceDescriptor.ID?
-        var gestureMonitorId: Monitor.ID?
+        var lockedGestureContext: LockedGestureContext?
     }
 
     nonisolated(unsafe) static weak var _instance: MouseEventHandler?
@@ -182,7 +186,7 @@ final class MouseEventHandler {
         MouseEventHandler._instance = nil
         state.currentHoveredEdges = []
         state.isResizing = false
-        state.gesturePhase = .idle
+        resetGestureState()
     }
 
     private func handleMouseMovedFromTap(at location: CGPoint) {
@@ -464,7 +468,6 @@ final class MouseEventHandler {
         if controller.isOverviewOpen() { return }
         if controller.isPointInOwnWindow(location) { return }
         guard !state.isResizing, !state.isMoving else { return }
-        guard let context = resolveScrollContext(at: location) else { return }
 
         let isTrackpad = momentumPhase != 0 || phase != 0
         if isTrackpad {
@@ -482,6 +485,7 @@ final class MouseEventHandler {
         }
 
         guard abs(scrollDeltaX) > 0.5 else { return }
+        guard let context = resolveScrollContext(at: location) else { return }
 
         let sensitivity = CGFloat(controller.settings.scrollSensitivity)
         let adjustedDelta = scrollDeltaX * sensitivity
@@ -545,27 +549,12 @@ final class MouseEventHandler {
         let phase = event.phase
         if phase == .ended || phase == .cancelled {
             if state.gesturePhase == .committed {
-                guard let wsId = state.gestureWorkspaceId,
-                      let monitorId = state.gestureMonitorId,
-                      let monitor = controller.workspaceManager.monitor(byId: monitorId)
-                else {
+                guard let lockedContext = state.lockedGestureContext else {
+                    assertionFailure("Committed gesture missing locked context")
                     resetGestureState()
                     return
                 }
-                let insetFrame = controller.insetWorkingFrame(for: monitor)
-                let columns = engine.columns(in: wsId)
-                let gap = CGFloat(controller.workspaceManager.gaps)
-
-                controller.workspaceManager.withNiriViewportState(for: wsId) { endState in
-                    endState.endGesture(
-                        columns: columns,
-                        gap: gap,
-                        viewportWidth: insetFrame.width,
-                        centerMode: engine.centerFocusedColumn,
-                        alwaysCenterSingleColumn: engine.alwaysCenterSingleColumn
-                    )
-                }
-                controller.layoutRefreshController.startScrollAnimation(for: wsId)
+                finalizeOrCancelCommittedGesture(using: lockedContext, engine: engine)
             }
             resetGestureState()
             return
@@ -573,11 +562,6 @@ final class MouseEventHandler {
 
         if phase == .began {
             resetGestureState()
-        }
-
-        guard let currentContext = resolveScrollContext(at: location) else {
-            resetGestureState()
-            return
         }
 
         let touches = event.allTouches()
@@ -620,24 +604,33 @@ final class MouseEventHandler {
 
         switch state.gesturePhase {
         case .idle:
-            state.gestureWorkspaceId = currentContext.wsId
-            state.gestureMonitorId = currentContext.monitor.id
+            guard let currentContext = resolveScrollContext(at: location) else {
+                resetGestureState()
+                return
+            }
+            state.lockedGestureContext = .init(
+                workspaceId: currentContext.wsId,
+                monitorId: currentContext.monitor.id
+            )
             state.gestureStartX = avgX
             state.gestureStartY = avgY
             state.gestureLastDeltaX = 0.0
             state.gesturePhase = .armed
 
         case .armed, .committed:
-            let wsId = state.gestureWorkspaceId ?? currentContext.wsId
-            let monitor = if let monitorId = state.gestureMonitorId,
-                             let savedMonitor = controller.workspaceManager.monitor(byId: monitorId)
-            {
-                savedMonitor
-            } else {
-                currentContext.monitor
+            guard let lockedContext = state.lockedGestureContext else {
+                assertionFailure("Active gesture missing locked context")
+                resetGestureState()
+                return
             }
-            state.gestureWorkspaceId = wsId
-            state.gestureMonitorId = monitor.id
+            let wsId = lockedContext.workspaceId
+            guard let monitor = controller.workspaceManager.monitor(byId: lockedContext.monitorId) else {
+                if state.gesturePhase == .committed {
+                    cancelCommittedGestureViewportState(for: wsId)
+                }
+                resetGestureState()
+                return
+            }
 
             let dx = avgX - state.gestureStartX
             let currentDeltaX = dx
@@ -722,6 +715,47 @@ final class MouseEventHandler {
         }
     }
 
+    private func finalizeOrCancelCommittedGesture(
+        using lockedContext: State.LockedGestureContext,
+        engine: NiriLayoutEngine
+    ) {
+        guard let controller else { return }
+        let wsId = lockedContext.workspaceId
+        guard let monitor = controller.workspaceManager.monitor(byId: lockedContext.monitorId) else {
+            cancelCommittedGestureViewportState(for: wsId)
+            return
+        }
+
+        let insetFrame = controller.insetWorkingFrame(for: monitor)
+        let columns = engine.columns(in: wsId)
+        let gap = CGFloat(controller.workspaceManager.gaps)
+
+        controller.workspaceManager.withNiriViewportState(for: wsId) { endState in
+            endState.endGesture(
+                columns: columns,
+                gap: gap,
+                viewportWidth: insetFrame.width,
+                centerMode: engine.centerFocusedColumn,
+                alwaysCenterSingleColumn: engine.alwaysCenterSingleColumn
+            )
+        }
+        controller.layoutRefreshController.startScrollAnimation(for: wsId)
+    }
+
+    private func cancelCommittedGestureViewportState(for wsId: WorkspaceDescriptor.ID) {
+        guard let controller else { return }
+        var didCancel = false
+        controller.workspaceManager.withNiriViewportState(for: wsId) { vstate in
+            guard vstate.viewOffsetPixels.isGesture else { return }
+            vstate.cancelAnimation()
+            vstate.selectionProgress = 0.0
+            didCancel = true
+        }
+        if didCancel {
+            controller.layoutRefreshController.executeLayoutRefreshImmediate()
+        }
+    }
+
     private func resolveScrollContext(at location: CGPoint) -> (
         engine: NiriLayoutEngine,
         wsId: WorkspaceDescriptor.ID,
@@ -748,7 +782,6 @@ final class MouseEventHandler {
         state.gestureStartX = 0.0
         state.gestureStartY = 0.0
         state.gestureLastDeltaX = 0.0
-        state.gestureWorkspaceId = nil
-        state.gestureMonitorId = nil
+        state.lockedGestureContext = nil
     }
 }
