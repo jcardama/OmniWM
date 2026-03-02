@@ -17,9 +17,18 @@ let package = Package(
             name: "GhosttyKit",
             path: "Frameworks/GhosttyKit.xcframework"
         ),
+        // Wraps the Zig-compiled static library so Swift can `import CZigLayout`.
+        // The actual .a is produced by `make zig-build` (or ./build-zig.sh) and
+        // linked via OmniWM's linkerSettings below.
+        .systemLibrary(
+            name: "CZigLayout",
+            path: "Sources/CZigLayout",
+            pkgConfig: nil,
+            providers: nil
+        ),
         .target(
             name: "OmniWM",
-            dependencies: ["GhosttyKit"],
+            dependencies: ["GhosttyKit", "CZigLayout"],
             path: "Sources/OmniWM",
             resources: [
                 .process("Resources")
@@ -38,7 +47,9 @@ let package = Package(
                 .linkedFramework("QuartzCore"),
                 .linkedLibrary("z"),
                 .linkedLibrary("c++"),
-                .unsafeFlags(["-F/System/Library/PrivateFrameworks", "-framework", "SkyLight"])
+                .linkedLibrary("omni_layout"),
+                .unsafeFlags(["-F/System/Library/PrivateFrameworks", "-framework", "SkyLight",
+                               "-L.build/zig"])
             ]
         ),
         .executableTarget(
