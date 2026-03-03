@@ -143,6 +143,32 @@ pub const OmniNiriResizeResult = extern struct {
     new_view_offset: f64,
 };
 
+pub const OmniUuid128 = extern struct {
+    bytes: [16]u8,
+};
+
+pub const OmniNiriStateColumnInput = extern struct {
+    column_id: OmniUuid128,
+    window_start: usize,
+    window_count: usize,
+    active_tile_idx: usize,
+    is_tabbed: u8,
+};
+
+pub const OmniNiriStateWindowInput = extern struct {
+    window_id: OmniUuid128,
+    column_id: OmniUuid128,
+    column_index: usize,
+};
+
+pub const OmniNiriStateValidationResult = extern struct {
+    column_count: usize,
+    window_count: usize,
+    first_invalid_column_index: i64,
+    first_invalid_window_index: i64,
+    first_error_code: i32,
+};
+
 const Rect = struct {
     x: f64,
     y: f64,
@@ -223,6 +249,68 @@ export fn omni_axis_solve_tabbed(
 
     solveTabbedImpl(windows, window_count, available_space, out);
     return 0;
+}
+
+export fn omni_niri_validate_state_snapshot(
+    columns: [*c]const OmniNiriStateColumnInput,
+    column_count: usize,
+    windows: [*c]const OmniNiriStateWindowInput,
+    window_count: usize,
+    out_result: [*c]OmniNiriStateValidationResult,
+) i32 {
+    if (out_result == null) return OMNI_ERR_INVALID_ARGS;
+    if (column_count > 0 and columns == null) return OMNI_ERR_INVALID_ARGS;
+    if (window_count > 0 and windows == null) return OMNI_ERR_INVALID_ARGS;
+
+    out_result[0] = .{
+        .column_count = column_count,
+        .window_count = window_count,
+        .first_invalid_column_index = -1,
+        .first_invalid_window_index = -1,
+        .first_error_code = OMNI_OK,
+    };
+
+    if (column_count == 0 and window_count > 0) {
+        out_result[0].first_invalid_window_index = 0;
+        out_result[0].first_error_code = OMNI_ERR_OUT_OF_RANGE;
+        return OMNI_ERR_OUT_OF_RANGE;
+    }
+
+    for (0..column_count) |idx| {
+        const col = columns[idx];
+        _ = col.column_id;
+        _ = col.is_tabbed;
+
+        if (col.window_start > window_count) {
+            out_result[0].first_invalid_column_index = @intCast(idx);
+            out_result[0].first_error_code = OMNI_ERR_OUT_OF_RANGE;
+            return OMNI_ERR_OUT_OF_RANGE;
+        }
+        if (col.window_count > window_count - col.window_start) {
+            out_result[0].first_invalid_column_index = @intCast(idx);
+            out_result[0].first_error_code = OMNI_ERR_OUT_OF_RANGE;
+            return OMNI_ERR_OUT_OF_RANGE;
+        }
+        if (col.window_count > 0 and col.active_tile_idx >= col.window_count) {
+            out_result[0].first_invalid_column_index = @intCast(idx);
+            out_result[0].first_error_code = OMNI_ERR_OUT_OF_RANGE;
+            return OMNI_ERR_OUT_OF_RANGE;
+        }
+    }
+
+    for (0..window_count) |idx| {
+        const win = windows[idx];
+        _ = win.window_id;
+        _ = win.column_id;
+
+        if (win.column_index >= column_count) {
+            out_result[0].first_invalid_window_index = @intCast(idx);
+            out_result[0].first_error_code = OMNI_ERR_OUT_OF_RANGE;
+            return OMNI_ERR_OUT_OF_RANGE;
+        }
+    }
+
+    return OMNI_OK;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

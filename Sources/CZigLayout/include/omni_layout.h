@@ -314,3 +314,36 @@ int32_t omni_niri_insertion_dropzone(
 int32_t omni_niri_resize_compute(
     const OmniNiriResizeInput *input,
     OmniNiriResizeResult *out_result);
+
+typedef struct {
+    uint8_t bytes[16];
+} OmniUuid128;
+
+typedef struct {
+    OmniUuid128 column_id;
+    size_t window_start;
+    size_t window_count;
+    size_t active_tile_idx;
+    uint8_t is_tabbed;
+} OmniNiriStateColumnInput;
+
+typedef struct {
+    OmniUuid128 window_id;
+    OmniUuid128 column_id;
+    size_t column_index;
+} OmniNiriStateWindowInput;
+
+typedef struct {
+    size_t column_count;
+    size_t window_count;
+    int64_t first_invalid_column_index;
+    int64_t first_invalid_window_index;
+    int32_t first_error_code;
+} OmniNiriStateValidationResult;
+
+int32_t omni_niri_validate_state_snapshot(
+    const OmniNiriStateColumnInput *columns,
+    size_t column_count,
+    const OmniNiriStateWindowInput *windows,
+    size_t window_count,
+    OmniNiriStateValidationResult *out_result);

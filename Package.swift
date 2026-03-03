@@ -64,6 +64,9 @@ let package = Package(
             name: "OmniWMTests",
             dependencies: ["OmniWM"],
             path: "Tests/OmniWMTests",
+            resources: [
+                .process("Benchmarks")
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
