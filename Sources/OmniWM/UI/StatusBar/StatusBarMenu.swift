@@ -394,7 +394,7 @@ final class MenuToggleSwitchView: NSView {
         }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.activeInActiveApp, .mouseEnteredAndExited],
+            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
             owner: self,
             userInfo: nil
         )
@@ -404,6 +404,14 @@ final class MenuToggleSwitchView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
+        updateAppearance(animated: true)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let hoveredNow = bounds.contains(point)
+        guard hoveredNow != isHovered else { return }
+        isHovered = hoveredNow
         updateAppearance(animated: true)
     }
 
@@ -506,7 +514,7 @@ final class MenuToggleRowView: NSView {
         }
         trackingArea = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInActiveApp],
+            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
             owner: self,
             userInfo: nil
         )
@@ -515,6 +523,11 @@ final class MenuToggleRowView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         setHovered(true)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        setHovered(bounds.contains(point))
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -529,17 +542,17 @@ final class MenuToggleRowView: NSView {
     private func setHovered(_ hovered: Bool) {
         backgroundLayer?.frame = NSRect(x: 4, y: 2, width: menuWidth - 8, height: 24)
         let targetBackground = hovered
-            ? NSColor.controlAccentColor.withAlphaComponent(0.15).cgColor
+            ? NSColor.controlAccentColor.withAlphaComponent(0.34).cgColor
             : NSColor.clear.cgColor
 
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.14)
+        CATransaction.setAnimationDuration(0.12)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
         backgroundLayer?.backgroundColor = targetBackground
         CATransaction.commit()
 
-        iconView?.contentTintColor = hovered ? .labelColor : .secondaryLabelColor
-        labelField?.textColor = .labelColor
+        iconView?.contentTintColor = hovered ? .white : .secondaryLabelColor
+        labelField?.textColor = hovered ? .white : .labelColor
     }
 }
 
@@ -621,7 +634,7 @@ final class MenuActionRowView: NSView {
         }
         trackingArea = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInActiveApp],
+            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
             owner: self,
             userInfo: nil
         )
@@ -631,6 +644,14 @@ final class MenuActionRowView: NSView {
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
         setHoveredStyle(true)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let hoveredNow = bounds.contains(point)
+        guard hoveredNow != isHovered else { return }
+        isHovered = hoveredNow
+        setHoveredStyle(hoveredNow)
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -663,14 +684,14 @@ final class MenuActionRowView: NSView {
             if isDestructive {
                 background = NSColor.systemRed.withAlphaComponent(0.14).cgColor
             } else {
-                background = NSColor.controlAccentColor.withAlphaComponent(0.13).cgColor
+                background = NSColor.controlAccentColor.withAlphaComponent(0.32).cgColor
             }
         } else {
             background = NSColor.clear.cgColor
         }
 
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.14)
+        CATransaction.setAnimationDuration(0.12)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
         backgroundLayer?.backgroundColor = background
         CATransaction.commit()
@@ -679,8 +700,8 @@ final class MenuActionRowView: NSView {
             iconView?.contentTintColor = .systemRed
             labelField?.textColor = .systemRed
         } else {
-            iconView?.contentTintColor = hovered ? .labelColor : .secondaryLabelColor
-            labelField?.textColor = .labelColor
+            iconView?.contentTintColor = hovered ? .white : .secondaryLabelColor
+            labelField?.textColor = hovered ? .white : .labelColor
         }
     }
 }
