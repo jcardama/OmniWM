@@ -68,6 +68,7 @@ extension NiriLayoutEngine {
         let targetWorkspaceId: WorkspaceDescriptor.ID
     }
 
+    #if OMNI_NIRI_LEGACY_TEST_BACKEND
     private func applyLegacyWorkspaceMutation(
         _ prepared: WorkspacePreparedRequest
     ) -> WorkspaceApplyOutcome? {
@@ -95,6 +96,7 @@ extension NiriLayoutEngine {
             movedHandle: applyOutcome.movedHandle
         )
     }
+    #endif
 
     private func applyRuntimeWorkspaceMutation(
         _ prepared: WorkspacePreparedRequest,
@@ -233,7 +235,11 @@ extension NiriLayoutEngine {
     ) -> WorkspaceApplyOutcome? {
         switch backend {
         case .legacyPlanApply:
+            #if OMNI_NIRI_LEGACY_TEST_BACKEND
             return applyLegacyWorkspaceMutation(prepared)
+            #else
+            preconditionFailure("Niri legacy backend is test-only and unavailable in this build")
+            #endif
         case .zigContext:
             return applyRuntimeWorkspaceMutation(
                 prepared,

@@ -145,7 +145,11 @@ extension NiriLayoutEngine {
 
         switch backend {
         case .legacyPlanApply:
+            #if OMNI_NIRI_LEGACY_TEST_BACKEND
             return resolveWithLegacySnapshot()
+            #else
+            preconditionFailure("Niri legacy backend is test-only and unavailable in this build")
+            #endif
 
         case .zigContext:
             guard let workspaceId else {

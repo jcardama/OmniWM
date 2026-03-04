@@ -62,6 +62,7 @@ extension NiriLayoutEngine {
         return LifecycleRuntimePreparation(context: context, snapshot: snapshot)
     }
 
+    #if OMNI_NIRI_LEGACY_TEST_BACKEND
     private func planLifecycleMutation(
         op: NiriStateZigKernel.MutationOp,
         in workspaceId: WorkspaceDescriptor.ID,
@@ -112,6 +113,7 @@ extension NiriLayoutEngine {
 
         return (snapshot, outcome)
     }
+    #endif
 
     func addWindow(
         handle: WindowHandle,
@@ -121,6 +123,7 @@ extension NiriLayoutEngine {
     ) -> NiriWindow {
         switch backend {
         case .legacyPlanApply:
+            #if OMNI_NIRI_LEGACY_TEST_BACKEND
             _ = ensureRoot(for: workspaceId)
 
             guard let plan = planLifecycleMutation(
@@ -152,6 +155,9 @@ extension NiriLayoutEngine {
                 )
             }
             return targetWindow
+            #else
+            preconditionFailure("Niri legacy backend is test-only and unavailable in this build")
+            #endif
 
         case .zigContext:
             guard let prepared = prepareLifecycleRuntime(
@@ -266,6 +272,7 @@ extension NiriLayoutEngine {
 
         switch backend {
         case .legacyPlanApply:
+            #if OMNI_NIRI_LEGACY_TEST_BACKEND
             guard let plan = planLifecycleMutation(
                 op: .removeWindow,
                 in: workspaceId,
@@ -292,6 +299,9 @@ extension NiriLayoutEngine {
                     reason: "applier returned applied=false"
                 )
             }
+            #else
+            preconditionFailure("Niri legacy backend is test-only and unavailable in this build")
+            #endif
 
         case .zigContext:
             guard let prepared = prepareLifecycleRuntime(
@@ -415,6 +425,7 @@ extension NiriLayoutEngine {
     ) -> NodeId? {
         switch backend {
         case .legacyPlanApply:
+            #if OMNI_NIRI_LEGACY_TEST_BACKEND
             let snapshot = NiriStateZigKernel.makeSnapshot(columns: columns(in: workspaceId))
             let selectedTarget = NiriStateZigKernel.mutationNodeTarget(
                 for: selectedNodeId,
@@ -430,6 +441,9 @@ extension NiriLayoutEngine {
                 return columns(in: workspaceId).first?.firstChild()?.id
             }
             return NiriStateZigKernel.nodeId(from: outcome.targetNode, snapshot: snapshot)
+            #else
+            preconditionFailure("Niri legacy backend is test-only and unavailable in this build")
+            #endif
 
         case .zigContext:
             guard root(for: workspaceId) != nil else { return nil }
@@ -466,6 +480,7 @@ extension NiriLayoutEngine {
     ) -> NodeId? {
         switch backend {
         case .legacyPlanApply:
+            #if OMNI_NIRI_LEGACY_TEST_BACKEND
             let snapshot = NiriStateZigKernel.makeSnapshot(columns: columns(in: workspaceId))
             guard let sourceWindowIndex = snapshot.windowIndexByNodeId[removingNodeId] else {
                 return nil
@@ -478,6 +493,9 @@ extension NiriLayoutEngine {
             let outcome = NiriStateZigKernel.resolveMutation(snapshot: snapshot, request: request)
             guard outcome.rc == 0 else { return nil }
             return NiriStateZigKernel.nodeId(from: outcome.targetNode, snapshot: snapshot)
+            #else
+            preconditionFailure("Niri legacy backend is test-only and unavailable in this build")
+            #endif
 
         case .zigContext:
             guard root(for: workspaceId) != nil else { return nil }

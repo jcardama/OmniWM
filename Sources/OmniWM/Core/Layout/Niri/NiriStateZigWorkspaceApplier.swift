@@ -1,5 +1,8 @@
+#if OMNI_NIRI_LEGACY_TEST_BACKEND
 import Foundation
 
+/// Internal legacy test backend only. Retained for parity and regression tests.
+@available(*, deprecated, message: "Internal legacy test backend only")
 enum NiriStateZigWorkspaceApplier {
     struct ApplyOutcome {
         let applied: Bool
@@ -237,3 +240,4 @@ enum NiriStateZigWorkspaceApplier {
         )
     }
 }
+#endif

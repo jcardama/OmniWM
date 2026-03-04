@@ -29,6 +29,16 @@ func makeTestMonitor(
 }
 
 @Suite struct NiriLayoutEngineTests {
+    @Test func defaultBackendIsZigContext() {
+        let engine = NiriLayoutEngine()
+        #expect(engine.backend == .zigContext)
+    }
+
+    @Test func legacyBackendCanBeSelectedUnderXCTest() {
+        let engine = NiriLayoutEngine()
+        engine.backend = .legacyPlanApply
+        #expect(engine.backend == .legacyPlanApply)
+    }
 
     @Test func selectionFallbackAfterRemoval_sameSibling() {
         let engine = NiriLayoutEngine(maxWindowsPerColumn: 3)

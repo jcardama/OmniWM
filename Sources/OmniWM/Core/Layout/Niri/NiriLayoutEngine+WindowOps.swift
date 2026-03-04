@@ -56,6 +56,7 @@ extension NiriLayoutEngine {
         return WindowMutationPreparedRequest(snapshot: snapshot, request: request)
     }
 
+    #if OMNI_NIRI_LEGACY_TEST_BACKEND
     private func applyLegacyWindowMutation(
         _ prepared: WindowMutationPreparedRequest
     ) -> WindowMutationApplyOutcome? {
@@ -79,6 +80,7 @@ extension NiriLayoutEngine {
             delegatedMoveColumn: applyOutcome.delegatedMoveColumn
         )
     }
+    #endif
 
     private func applyRuntimeWindowMutation(
         _ prepared: WindowMutationPreparedRequest,
@@ -266,7 +268,11 @@ extension NiriLayoutEngine {
     ) -> WindowMutationApplyOutcome? {
         switch backend {
         case .legacyPlanApply:
+            #if OMNI_NIRI_LEGACY_TEST_BACKEND
             return applyLegacyWindowMutation(prepared)
+            #else
+            preconditionFailure("Niri legacy backend is test-only and unavailable in this build")
+            #endif
         case .zigContext:
             return applyRuntimeWindowMutation(prepared, in: workspaceId)
         }
@@ -398,6 +404,7 @@ extension NiriLayoutEngine {
         )
     }
 
+    #if OMNI_NIRI_LEGACY_TEST_BACKEND
     func planMutation(
         op: NiriStateZigKernel.MutationOp,
         sourceWindow: NiriWindow,
@@ -429,6 +436,7 @@ extension NiriLayoutEngine {
 
         return (prepared.snapshot, outcome)
     }
+    #endif
 
     func moveWindow(
         _ node: NiriWindow,

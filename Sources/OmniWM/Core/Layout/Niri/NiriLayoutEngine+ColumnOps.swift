@@ -82,6 +82,7 @@ extension NiriLayoutEngine {
         return ColumnMutationPreparedRequest(snapshot: snapshot, request: request)
     }
 
+    #if OMNI_NIRI_LEGACY_TEST_BACKEND
     private func applyLegacyColumnMutation(
         _ prepared: ColumnMutationPreparedRequest
     ) -> ColumnMutationApplyOutcome? {
@@ -104,6 +105,7 @@ extension NiriLayoutEngine {
             targetWindow: applyOutcome.targetWindow
         )
     }
+    #endif
 
     private func applyRuntimeColumnMutation(
         _ prepared: ColumnMutationPreparedRequest,
@@ -191,7 +193,11 @@ extension NiriLayoutEngine {
     ) -> ColumnMutationApplyOutcome? {
         switch backend {
         case .legacyPlanApply:
+            #if OMNI_NIRI_LEGACY_TEST_BACKEND
             return applyLegacyColumnMutation(prepared)
+            #else
+            preconditionFailure("Niri legacy backend is test-only and unavailable in this build")
+            #endif
         case .zigContext:
             return applyRuntimeColumnMutation(
                 prepared,
