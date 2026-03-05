@@ -148,10 +148,6 @@ extension NiriLayoutEngine {
             changed = true
         }
 
-        if changed {
-            _ = syncRuntimeStateNow(workspaceId: resize.workspaceId)
-        }
-
         return changed
     }
 
@@ -181,6 +177,8 @@ extension NiriLayoutEngine {
                 alwaysCenterSingleColumn: alwaysCenterSingleColumn
             )
         }
+
+        _ = syncRuntimeStateNow(workspaceId: resize.workspaceId)
 
         interactiveResize = nil
     }

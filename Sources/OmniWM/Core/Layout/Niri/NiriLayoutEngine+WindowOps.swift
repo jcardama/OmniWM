@@ -122,6 +122,42 @@ extension NiriLayoutEngine {
         return runtimeOutcome
     }
 
+    private func applyRuntimeWindowMutationAppliedOnly(
+        _ prepared: WindowMutationPreparedRequest,
+        in workspaceId: WorkspaceDescriptor.ID
+    ) -> Bool? {
+        guard let context = prepareSeededRuntimeContext(
+            for: workspaceId,
+            snapshot: prepared.snapshot
+        ) else {
+            return nil
+        }
+
+        let applyOutcome = NiriStateZigKernel.applyMutation(
+            context: context,
+            request: .init(
+                request: prepared.request,
+                snapshot: prepared.snapshot
+            )
+        )
+        guard applyOutcome.rc == 0 else {
+            return nil
+        }
+        guard applyOutcome.applied else {
+            return false
+        }
+
+        guard applyProjectedRuntimeExport(
+            context: context,
+            workspaceId: workspaceId,
+            delta: applyOutcome.delta
+        ) != nil else {
+            return nil
+        }
+
+        return true
+    }
+
     private func executePreparedWindowMutation(
         _ prepared: WindowMutationPreparedRequest,
         in workspaceId: WorkspaceDescriptor.ID
@@ -309,7 +345,7 @@ extension NiriLayoutEngine {
         direction: Direction,
         in workspaceId: WorkspaceDescriptor.ID
     ) -> Bool {
-        guard let applyOutcome = applyWindowMutation(
+        guard let prepared = prepareWindowMutationRequest(
             op: .moveWindowVertical,
             sourceWindow: node,
             direction: direction,
@@ -317,7 +353,10 @@ extension NiriLayoutEngine {
         ) else {
             return false
         }
-        return applyOutcome.applied
+        guard let applied = applyRuntimeWindowMutationAppliedOnly(prepared, in: workspaceId) else {
+            return false
+        }
+        return applied
     }
 
     private func swapWindowVertical(
@@ -325,7 +364,7 @@ extension NiriLayoutEngine {
         direction: Direction,
         in workspaceId: WorkspaceDescriptor.ID
     ) -> Bool {
-        guard let applyOutcome = applyWindowMutation(
+        guard let prepared = prepareWindowMutationRequest(
             op: .swapWindowVertical,
             sourceWindow: node,
             direction: direction,
@@ -333,7 +372,10 @@ extension NiriLayoutEngine {
         ) else {
             return false
         }
-        return applyOutcome.applied
+        guard let applied = applyRuntimeWindowMutationAppliedOnly(prepared, in: workspaceId) else {
+            return false
+        }
+        return applied
     }
 
     private func moveWindowHorizontal(
