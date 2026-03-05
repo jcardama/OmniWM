@@ -97,6 +97,99 @@ final class NiriTxnIntegrationTests: XCTestCase {
         XCTAssertEqual(outcome.delta?.windows.count, snapshot.windows.count)
     }
 
+    func testCreateColumnAndMoveTxnAppliesAndReindexesMovedWindow() throws {
+        let workspace = WorkspaceDescriptor(name: "txn-create-column")
+        let engine = NiriLayoutEngine(maxVisibleColumns: 3)
+        let root = engine.ensureRoot(for: workspace.id)
+        let sourceColumn = try XCTUnwrap(root.columns.first)
+
+        let movingWindow = makeWindow()
+        let remainingWindow = makeWindow()
+        sourceColumn.appendChild(movingWindow)
+        sourceColumn.appendChild(remainingWindow)
+        sourceColumn.setActiveTileIdx(0)
+
+        let snapshot = NiriStateZigKernel.makeSnapshot(columns: engine.columns(in: workspace.id))
+        let context = try XCTUnwrap(engine.ensureLayoutContext(for: workspace.id))
+        XCTAssertEqual(
+            NiriStateZigKernel.seedRuntimeState(context: context, snapshot: snapshot),
+            Int32(OMNI_OK)
+        )
+
+        let sourceWindowIndex = try XCTUnwrap(snapshot.windowIndexByNodeId[movingWindow.id])
+        let request = NiriStateZigKernel.MutationRequest(
+            op: .createColumnAndMove,
+            sourceWindowIndex: sourceWindowIndex,
+            direction: .right,
+            maxVisibleColumns: engine.maxVisibleColumns
+        )
+        let outcome = NiriStateZigKernel.applyMutation(
+            context: context,
+            request: .init(
+                request: request,
+                snapshot: snapshot,
+                createdColumnId: UUID()
+            )
+        )
+
+        XCTAssertEqual(outcome.rc, Int32(OMNI_OK))
+        XCTAssertTrue(outcome.applied)
+        let delta = try XCTUnwrap(outcome.delta)
+
+        let movedRecord = try XCTUnwrap(delta.windows.first { $0.window.windowId == movingWindow.id })
+        let remainingRecord = try XCTUnwrap(delta.windows.first { $0.window.windowId == remainingWindow.id })
+        XCTAssertEqual(movedRecord.columnOrderIndex, 1)
+        XCTAssertEqual(remainingRecord.columnOrderIndex, 0)
+    }
+
+    func testSwapWindowHorizontalTxnRecomputesWindowColumnMetadata() throws {
+        let workspace = WorkspaceDescriptor(name: "txn-swap-horizontal")
+        let engine = NiriLayoutEngine(infiniteLoop: false)
+        let root = engine.ensureRoot(for: workspace.id)
+        let sourceColumn = try XCTUnwrap(root.columns.first)
+
+        let sourceActiveWindow = makeWindow()
+        let sourceSecondaryWindow = makeWindow()
+        sourceColumn.appendChild(sourceActiveWindow)
+        sourceColumn.appendChild(sourceSecondaryWindow)
+        sourceColumn.setActiveTileIdx(0)
+
+        let targetColumn = NiriContainer()
+        root.appendChild(targetColumn)
+        let targetActiveWindow = makeWindow()
+        targetColumn.appendChild(targetActiveWindow)
+        targetColumn.setActiveTileIdx(0)
+
+        let snapshot = NiriStateZigKernel.makeSnapshot(columns: engine.columns(in: workspace.id))
+        let context = try XCTUnwrap(engine.ensureLayoutContext(for: workspace.id))
+        XCTAssertEqual(
+            NiriStateZigKernel.seedRuntimeState(context: context, snapshot: snapshot),
+            Int32(OMNI_OK)
+        )
+
+        let sourceWindowIndex = try XCTUnwrap(snapshot.windowIndexByNodeId[sourceActiveWindow.id])
+        let request = NiriStateZigKernel.MutationRequest(
+            op: .swapWindowHorizontal,
+            sourceWindowIndex: sourceWindowIndex,
+            direction: .right,
+            infiniteLoop: false
+        )
+        let outcome = NiriStateZigKernel.applyMutation(
+            context: context,
+            request: .init(request: request, snapshot: snapshot)
+        )
+
+        XCTAssertEqual(outcome.rc, Int32(OMNI_OK))
+        XCTAssertTrue(outcome.applied)
+        let delta = try XCTUnwrap(outcome.delta)
+
+        let movedSourceRecord = try XCTUnwrap(delta.windows.first { $0.window.windowId == sourceActiveWindow.id })
+        let movedTargetRecord = try XCTUnwrap(delta.windows.first { $0.window.windowId == targetActiveWindow.id })
+
+        XCTAssertEqual(movedSourceRecord.columnOrderIndex, 1)
+        XCTAssertEqual(movedTargetRecord.columnOrderIndex, 0)
+    }
+
     func testWorkspaceTxnMutatesBothContextsAndExportsBothDeltas() throws {
         let sourceWorkspace = WorkspaceDescriptor(name: "txn-source")
         let targetWorkspace = WorkspaceDescriptor(name: "txn-target")

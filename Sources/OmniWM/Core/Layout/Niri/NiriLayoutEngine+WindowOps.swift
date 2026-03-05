@@ -60,21 +60,7 @@ extension NiriLayoutEngine {
         _ prepared: WindowMutationPreparedRequest,
         in workspaceId: WorkspaceDescriptor.ID
     ) -> WindowMutationApplyOutcome? {
-        guard let context = prepareSeededRuntimeContext(
-            for: workspaceId,
-            snapshot: prepared.snapshot
-        ) else {
-            return nil
-        }
-
-        let applyOutcome = NiriStateZigKernel.applyMutation(
-            context: context,
-            request: .init(
-                request: prepared.request,
-                snapshot: prepared.snapshot
-            )
-        )
-        guard applyOutcome.rc == 0 else {
+        guard let applyOutcome = applyRuntimeWindowMutationCore(prepared, in: workspaceId) else {
             return nil
         }
         guard applyOutcome.applied else {
@@ -83,14 +69,6 @@ extension NiriLayoutEngine {
                 targetWindow: nil,
                 delegatedMoveColumn: nil
             )
-        }
-
-        guard applyProjectedRuntimeExport(
-            context: context,
-            workspaceId: workspaceId,
-            delta: applyOutcome.delta
-        ) != nil else {
-            return nil
         }
 
         var runtimeOutcome = WindowMutationApplyOutcome(
@@ -122,10 +100,10 @@ extension NiriLayoutEngine {
         return runtimeOutcome
     }
 
-    private func applyRuntimeWindowMutationAppliedOnly(
+    private func applyRuntimeWindowMutationCore(
         _ prepared: WindowMutationPreparedRequest,
         in workspaceId: WorkspaceDescriptor.ID
-    ) -> Bool? {
+    ) -> NiriStateZigKernel.MutationApplyOutcome? {
         guard let context = prepareSeededRuntimeContext(
             for: workspaceId,
             snapshot: prepared.snapshot
@@ -144,7 +122,7 @@ extension NiriLayoutEngine {
             return nil
         }
         guard applyOutcome.applied else {
-            return false
+            return applyOutcome
         }
 
         guard applyProjectedRuntimeExport(
@@ -155,7 +133,17 @@ extension NiriLayoutEngine {
             return nil
         }
 
-        return true
+        return applyOutcome
+    }
+
+    private func applyRuntimeWindowMutationAppliedOnly(
+        _ prepared: WindowMutationPreparedRequest,
+        in workspaceId: WorkspaceDescriptor.ID
+    ) -> Bool? {
+        guard let applyOutcome = applyRuntimeWindowMutationCore(prepared, in: workspaceId) else {
+            return nil
+        }
+        return applyOutcome.applied
     }
 
     private func executePreparedWindowMutation(

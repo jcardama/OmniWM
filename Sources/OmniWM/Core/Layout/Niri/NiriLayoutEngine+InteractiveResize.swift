@@ -148,6 +148,7 @@ extension NiriLayoutEngine {
             changed = true
         }
 
+        // Keep drag updates lightweight; runtime sync happens once in `interactiveResizeEnd`.
         return changed
     }
 
@@ -178,6 +179,7 @@ extension NiriLayoutEngine {
             )
         }
 
+        // Commit the deferred runtime sync at gesture end.
         _ = syncRuntimeStateNow(workspaceId: resize.workspaceId)
 
         interactiveResize = nil
