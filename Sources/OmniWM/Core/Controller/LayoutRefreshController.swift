@@ -502,6 +502,11 @@ import QuartzCore
         let focusedWorkspaceId = controller.activeWorkspace()?.id
 
         for (ax, pid, winId) in windows {
+            // Skip windows above the normal level (e.g. Picture-in-Picture overlays)
+            if let info = SkyLight.shared.queryWindowInfo(UInt32(winId)), info.level > 0 {
+                continue
+            }
+
             if let bundleId = controller.appInfoCache.bundleId(for: pid) {
                 if bundleId == LockScreenObserver.lockScreenAppBundleId {
                     continue

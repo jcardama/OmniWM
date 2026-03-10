@@ -76,6 +76,12 @@ final class AXEventHandler: CGSEventDelegate {
         }
 
         let pid = windowInfo.pid
+
+        // Skip windows above the normal level (e.g. Picture-in-Picture overlays)
+        if windowInfo.level > 0 {
+            return
+        }
+
         CGSEventObserver.shared.subscribeToWindows([windowId])
 
         if let axRef = AXWindowService.axWindowRef(for: windowId, pid: pid) {
