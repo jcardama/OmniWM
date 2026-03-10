@@ -1,4 +1,5 @@
 import CoreGraphics
+import Carbon
 import Foundation
 import Testing
 
@@ -401,5 +402,77 @@ private func makeSettingsTestMonitor(
         let decoded = try JSONDecoder().decode(SettingsExport.self, from: data1)
         let data2 = try encoder.encode(decoded)
         #expect(data1 == data2)
+    }
+}
+
+@Suite struct IncrementalSettingsExportTests {
+    @Test func defaultsPreserveAnimationsEnabled() {
+        #expect(SettingsExport.defaults().animationsEnabled)
+    }
+
+    @Test func incrementalExportKeepsChangedAnimationsAndOmitsDefaultHotkeys() throws {
+        var export = SettingsExport.defaults()
+        export.animationsEnabled = false
+
+        let data = try export.exportData(incrementalOnly: true)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            Issue.record("Expected incremental export to produce a JSON object")
+            return
+        }
+
+        #expect((json["animationsEnabled"] as? Bool) == false)
+        #expect(json["hotkeyBindings"] == nil)
+    }
+
+    @Test func mergedImportDataPreservesUnchangedHotkeysById() throws {
+        let defaults = SettingsExport.defaults()
+        guard defaults.hotkeyBindings.count >= 2 else {
+            Issue.record("Expected at least two default hotkey bindings")
+            return
+        }
+
+        var changed = defaults
+        let updatedBinding = KeyBinding(
+            keyCode: UInt32(kVK_ANSI_K),
+            modifiers: UInt32(controlKey) | UInt32(optionKey)
+        )
+        changed.hotkeyBindings[0].binding = updatedBinding
+
+        let rawData = try changed.exportData(incrementalOnly: true, defaults: defaults)
+        let mergedData = try SettingsExport.mergedImportData(from: rawData, defaults: defaults)
+        let merged = try JSONDecoder().decode(SettingsExport.self, from: mergedData)
+
+        #expect(merged.hotkeyBindings[0].binding == updatedBinding)
+        #expect(merged.hotkeyBindings[1].binding == defaults.hotkeyBindings[1].binding)
+        #expect(merged.animationsEnabled == defaults.animationsEnabled)
+    }
+}
+
+@Suite struct KeyBindingCodecTests {
+    @Test func humanReadableBindingsRoundTripAsStrings() throws {
+        let binding = KeyBinding(
+            keyCode: UInt32(kVK_ANSI_K),
+            modifiers: UInt32(controlKey) | UInt32(optionKey)
+        )
+
+        let data = try JSONEncoder().encode(binding)
+        let decodedJSON = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+
+        #expect(decodedJSON as? String == "Control+Option+K")
+        #expect(try JSONDecoder().decode(KeyBinding.self, from: data) == binding)
+    }
+
+    @Test func unknownKeyCodesFallBackToLegacyNumericEncoding() throws {
+        let binding = KeyBinding(keyCode: 200, modifiers: UInt32(controlKey))
+
+        let data = try JSONEncoder().encode(binding)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            Issue.record("Expected unknown key binding to encode as an object")
+            return
+        }
+
+        #expect((json["keyCode"] as? NSNumber)?.uint32Value == 200)
+        #expect((json["modifiers"] as? NSNumber)?.uint32Value == UInt32(controlKey))
+        #expect(try JSONDecoder().decode(KeyBinding.self, from: data) == binding)
     }
 }

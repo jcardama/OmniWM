@@ -149,6 +149,7 @@ extension SettingsExport {
             scrollModifierKey: ScrollModifierKey.optionShift.rawValue,
             gestureFingerCount: GestureFingerCount.three.rawValue,
             gestureInvertDirection: true,
+            animationsEnabled: true,
             menuAnywhereNativeEnabled: true,
             menuAnywherePaletteEnabled: true,
             menuAnywherePosition: MenuAnywherePosition.cursor.rawValue,
@@ -159,6 +160,100 @@ extension SettingsExport {
             quakeTerminalMonitorMode: QuakeTerminalMonitorMode.mouseCursor.rawValue,
             appearanceMode: AppearanceMode.automatic.rawValue
         )
+    }
+
+    static func makeEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return encoder
+    }
+
+    func exportData(
+        incrementalOnly: Bool = true,
+        defaults: SettingsExport = .defaults(),
+        encoder: JSONEncoder = Self.makeEncoder()
+    ) throws -> Data {
+        let data = try encoder.encode(self)
+        guard incrementalOnly else { return data }
+
+        let defaultsData = try encoder.encode(defaults)
+        guard let currentDict = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let defaultsDict = try JSONSerialization.jsonObject(with: defaultsData) as? [String: Any]
+        else {
+            return data
+        }
+
+        var filtered: [String: Any] = ["version": version]
+        for (key, value) in currentDict where key != "version" && key != "hotkeyBindings" {
+            if let defaultValue = defaultsDict[key], jsonValuesEqual(value, defaultValue) {
+                continue
+            }
+            filtered[key] = value
+        }
+
+        if let currentBindings = currentDict["hotkeyBindings"] as? [[String: Any]],
+           let defaultBindings = defaultsDict["hotkeyBindings"] as? [[String: Any]] {
+            let defaultsByID = Dictionary(
+                defaultBindings.compactMap { binding in
+                    (binding["id"] as? String).map { ($0, binding) }
+                },
+                uniquingKeysWith: { _, last in last }
+            )
+            let changedBindings = currentBindings.filter { binding in
+                guard let id = binding["id"] as? String,
+                      let defaultBinding = defaultsByID[id]
+                else {
+                    return true
+                }
+                return !jsonValuesEqual(binding, defaultBinding)
+            }
+            if !changedBindings.isEmpty {
+                filtered["hotkeyBindings"] = changedBindings
+            }
+        }
+
+        return try JSONSerialization.data(
+            withJSONObject: filtered,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+    }
+
+    static func mergedImportData(
+        from rawData: Data,
+        defaults: SettingsExport = .defaults(),
+        encoder: JSONEncoder = Self.makeEncoder()
+    ) throws -> Data {
+        let defaultsData = try encoder.encode(defaults)
+        guard var defaultsDict = try JSONSerialization.jsonObject(with: defaultsData) as? [String: Any],
+              let importedDict = try JSONSerialization.jsonObject(with: rawData) as? [String: Any]
+        else {
+            return rawData
+        }
+
+        for (key, value) in importedDict where key != "hotkeyBindings" {
+            defaultsDict[key] = value
+        }
+
+        if let importedBindings = importedDict["hotkeyBindings"] as? [[String: Any]],
+           let defaultBindings = defaultsDict["hotkeyBindings"] as? [[String: Any]] {
+            let importedByID = Dictionary(
+                importedBindings.compactMap { binding in
+                    (binding["id"] as? String).map { ($0, binding) }
+                },
+                uniquingKeysWith: { _, last in last }
+            )
+            let mergedBindings = defaultBindings.map { defaultBinding -> [String: Any] in
+                guard let id = defaultBinding["id"] as? String,
+                      let importedBinding = importedByID[id]
+                else {
+                    return defaultBinding
+                }
+                return importedBinding
+            }
+            defaultsDict["hotkeyBindings"] = mergedBindings
+        }
+
+        return try JSONSerialization.data(withJSONObject: defaultsDict, options: [.sortedKeys])
     }
 }
 
@@ -252,53 +347,7 @@ extension SettingsStore {
             appearanceMode: appearanceMode.rawValue
         )
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(export)
-
-        let outputData: Data
-        if incrementalOnly {
-            let defaultsData = try encoder.encode(SettingsExport.defaults())
-            guard let currentDict = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let defaultsDict = try JSONSerialization.jsonObject(with: defaultsData) as? [String: Any]
-            else {
-                outputData = data
-                let directory = Self.exportURL.deletingLastPathComponent()
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                try outputData.write(to: Self.exportURL)
-                return
-            }
-            var filtered: [String: Any] = ["version": export.version]
-            for (key, value) in currentDict where key != "version" && key != "hotkeyBindings" {
-                if let defaultValue = defaultsDict[key], jsonValuesEqual(value, defaultValue) {
-                    continue
-                }
-                filtered[key] = value
-            }
-
-            // Element-wise diff for hotkeyBindings by id
-            if let currentBindings = currentDict["hotkeyBindings"] as? [[String: Any]],
-               let defaultBindings = defaultsDict["hotkeyBindings"] as? [[String: Any]] {
-                let defaultsByID = Dictionary(
-                    defaultBindings.compactMap { b in (b["id"] as? String).map { ($0, b) } },
-                    uniquingKeysWith: { _, last in last }
-                )
-                let changedBindings = currentBindings.filter { binding in
-                    guard let id = binding["id"] as? String,
-                          let defaultBinding = defaultsByID[id] else { return true }
-                    return !jsonValuesEqual(binding, defaultBinding)
-                }
-                if !changedBindings.isEmpty {
-                    filtered["hotkeyBindings"] = changedBindings
-                }
-            }
-            outputData = try JSONSerialization.data(
-                withJSONObject: filtered,
-                options: [.prettyPrinted, .sortedKeys]
-            )
-        } else {
-            outputData = data
-        }
+        let outputData = try export.exportData(incrementalOnly: incrementalOnly)
 
         let directory = Self.exportURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -307,43 +356,13 @@ extension SettingsStore {
 
     func importSettings() throws {
         let rawData = try Data(contentsOf: Self.exportURL)
-
-        let encoder = JSONEncoder()
-        let defaultsData = try encoder.encode(SettingsExport.defaults())
-
-        guard var defaultsDict = try JSONSerialization.jsonObject(with: defaultsData) as? [String: Any],
-              let importedDict = try JSONSerialization.jsonObject(with: rawData) as? [String: Any]
-        else {
-            let export = try JSONDecoder().decode(SettingsExport.self, from: rawData)
-            applyImport(export)
-            return
-        }
-
-        for (key, value) in importedDict where key != "hotkeyBindings" {
-            defaultsDict[key] = value
-        }
-
-        // Element-wise merge for hotkeyBindings by id
-        if let importedBindings = importedDict["hotkeyBindings"] as? [[String: Any]],
-           let defaultBindings = defaultsDict["hotkeyBindings"] as? [[String: Any]] {
-            let importedByID = Dictionary(
-                importedBindings.compactMap { b in (b["id"] as? String).map { ($0, b) } },
-                uniquingKeysWith: { _, last in last }
-            )
-            let merged = defaultBindings.map { defaultBinding -> [String: Any] in
-                guard let id = defaultBinding["id"] as? String,
-                      let imported = importedByID[id] else { return defaultBinding }
-                return imported
-            }
-            defaultsDict["hotkeyBindings"] = merged
-        }
-
-        let mergedData = try JSONSerialization.data(withJSONObject: defaultsDict)
+        let mergedData = try SettingsExport.mergedImportData(from: rawData)
         let export = try JSONDecoder().decode(SettingsExport.self, from: mergedData)
         applyImport(export)
     }
 
-    private func applyImport(_ export: SettingsExport) {        hotkeysEnabled = export.hotkeysEnabled
+    private func applyImport(_ export: SettingsExport) {
+        hotkeysEnabled = export.hotkeysEnabled
         focusFollowsMouse = export.focusFollowsMouse
         moveMouseToFocusedWindow = export.moveMouseToFocusedWindow
         mouseWarpEnabled = export.mouseWarpEnabled
