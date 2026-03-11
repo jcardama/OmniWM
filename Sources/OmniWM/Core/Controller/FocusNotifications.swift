@@ -37,10 +37,10 @@ final class FocusNotificationDispatcher {
     func notifyFocusChangesIfNeeded() {
         guard let controller else { return }
 
+        let currentMonitorId = controller.activeMonitorId ?? controller.monitorForInteraction()?.id
         let currentWorkspaceId = controller.focusedHandle
             .flatMap { controller.workspaceManager.workspace(for: $0) }
-            ?? controller.activeWorkspace()?.id
-        let currentMonitorId = controller.activeMonitorId ?? controller.monitorForInteraction()?.id
+            ?? currentMonitorId.flatMap { controller.workspaceManager.currentActiveWorkspace(on: $0)?.id }
 
         let currentHandleId = controller.focusedHandle?.id
         let currentWindowId = controller.focusedHandle.flatMap { controller.workspaceManager.entry(for: $0)?.windowId }

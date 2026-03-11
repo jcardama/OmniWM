@@ -102,10 +102,6 @@ final class NiriLayoutEngine {
 
     var roots: [WorkspaceDescriptor.ID: NiriRoot] = [:]
 
-    /// Viewport states rescued from monitors removed during display ID changes (e.g. KVM switch).
-    /// Consumed by moveWorkspace when re-associating workspaces to new monitors.
-    var orphanedViewportStates: [WorkspaceDescriptor.ID: ViewportState] = [:]
-
     var handleToNode: [WindowHandle: NiriWindow] = [:]
 
     var closingHandles: Set<WindowHandle> = []
@@ -290,12 +286,10 @@ final class NiriLayoutEngine {
     }
 
     private func resetAllPresetWidthIndices() {
-        for monitor in monitors.values {
-            for root in monitor.workspaceRoots.values {
-                for child in root.children {
-                    if let column = child as? NiriContainer {
-                        column.presetWidthIdx = nil
-                    }
+        for root in roots.values {
+            for child in root.children {
+                if let column = child as? NiriContainer {
+                    column.presetWidthIdx = nil
                 }
             }
         }

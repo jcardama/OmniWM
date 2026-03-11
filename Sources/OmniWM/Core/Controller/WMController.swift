@@ -38,20 +38,19 @@ final class WMController {
     var isLockScreenActive: Bool = false
     let axManager = AXManager()
     let appInfoCache = AppInfoCache()
-    let focusManager = FocusManager()
+    let focusManager: FocusManager
     var focusedHandle: WindowHandle? {
-        didSet {
-            updateActiveMonitorFromFocusedHandle(focusedHandle)
-            focusNotificationDispatcher.notifyFocusChangesIfNeeded()
-        }
+        workspaceManager.focusedHandle
     }
 
     var activeMonitorId: Monitor.ID? {
-        didSet {
-            focusNotificationDispatcher.notifyFocusChangesIfNeeded()
-        }
+        get { workspaceManager.interactionMonitorId }
+        set { _ = workspaceManager.setInteractionMonitor(newValue) }
     }
-    var previousMonitorId: Monitor.ID?
+    var previousMonitorId: Monitor.ID? {
+        get { workspaceManager.previousInteractionMonitorId }
+        set { _ = workspaceManager.setPreviousInteractionMonitor(newValue) }
+    }
     private var suppressActiveMonitorUpdate: Bool = false
 
     var niriEngine: NiriLayoutEngine?
@@ -106,6 +105,7 @@ final class WMController {
         self.settings = settings
         self.windowFocusOperations = windowFocusOperations
         workspaceManager = WorkspaceManager(settings: settings)
+        focusManager = FocusManager(workspaceManager: workspaceManager)
         workspaceManager.updateAnimationClock(animationClock)
         hotkeys.onCommand = { [weak self] command in
             self?.commandHandler.handleCommand(command)
@@ -113,8 +113,11 @@ final class WMController {
         tabbedOverlayManager.onSelect = { [weak self] workspaceId, columnId, index in
             self?.layoutRefreshController.selectTabInNiri(workspaceId: workspaceId, columnId: columnId, index: index)
         }
+        workspaceManager.onSessionStateChanged = { [weak self] in
+            self?.focusNotificationDispatcher.notifyFocusChangesIfNeeded()
+        }
         focusManager.onFocusedHandleChanged = { [weak self] handle in
-            self?.focusedHandle = handle
+            self?.handleFocusedHandleChange(handle)
         }
     }
 
@@ -384,6 +387,11 @@ final class WMController {
     }
 
     func monitorForInteraction() -> Monitor? {
+        if let interactionMonitorId = workspaceManager.interactionMonitorId,
+           let monitor = workspaceManager.monitor(byId: interactionMonitorId)
+        {
+            return monitor
+        }
         if let focused = focusedHandle,
            let workspaceId = workspaceManager.workspace(for: focused),
            let monitor = workspaceManager.monitor(for: workspaceId)
@@ -402,12 +410,13 @@ final class WMController {
             return
         }
 
-        if let currentId = activeMonitorId, currentId != monitorId {
-            previousMonitorId = currentId
-        }
         if activeMonitorId != monitorId {
             activeMonitorId = monitorId
         }
+    }
+
+    private func handleFocusedHandleChange(_ handle: WindowHandle?) {
+        updateActiveMonitorFromFocusedHandle(handle)
     }
 
     func activeWorkspace() -> WorkspaceDescriptor? {

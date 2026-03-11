@@ -14,42 +14,32 @@ struct WorkspaceDescriptor: Identifiable, Hashable {
     }
 }
 
-private struct BiMap<A: Hashable, B: Hashable> {
-    private(set) var forward: [A: B] = [:]
-    private(set) var reverse: [B: A] = [:]
-
-    subscript(forward key: A) -> B? { forward[key] }
-    subscript(reverse key: B) -> A? { reverse[key] }
-
-    mutating func set(_ a: A, _ b: B) {
-        if let oldB = forward[a] { reverse.removeValue(forKey: oldB) }
-        if let oldA = reverse[b] { forward.removeValue(forKey: oldA) }
-        forward[a] = b
-        reverse[b] = a
-    }
-
-    @discardableResult
-    mutating func removeByForward(_ a: A) -> B? {
-        guard let b = forward.removeValue(forKey: a) else { return nil }
-        reverse.removeValue(forKey: b)
-        return b
-    }
-
-    @discardableResult
-    mutating func removeByReverse(_ b: B) -> A? {
-        guard let a = reverse.removeValue(forKey: b) else { return nil }
-        forward.removeValue(forKey: a)
-        return a
-    }
-
-    mutating func removeAll() {
-        forward.removeAll()
-        reverse.removeAll()
-    }
-}
-
 @MainActor
 final class WorkspaceManager {
+    struct SessionState {
+        struct MonitorSession {
+            var visibleWorkspaceId: WorkspaceDescriptor.ID?
+            var previousVisibleWorkspaceId: WorkspaceDescriptor.ID?
+        }
+
+        struct WorkspaceSession {
+            var niriViewportState: ViewportState?
+        }
+
+        struct FocusSession {
+            var focusedHandle: WindowHandle?
+            var lastFocusedByWorkspace: [WorkspaceDescriptor.ID: WindowHandle] = [:]
+            var isNonManagedFocusActive: Bool = false
+            var isAppFullscreenActive: Bool = false
+        }
+
+        var interactionMonitorId: Monitor.ID?
+        var previousInteractionMonitorId: Monitor.ID?
+        var monitorSessions: [Monitor.ID: MonitorSession] = [:]
+        var workspaceSessions: [WorkspaceDescriptor.ID: WorkspaceSession] = [:]
+        var focus = FocusSession()
+    }
+
     private(set) var monitors: [Monitor] = Monitor.current() {
         didSet { rebuildMonitorIndexes() }
     }
@@ -60,18 +50,16 @@ final class WorkspaceManager {
     private var workspacesById: [WorkspaceDescriptor.ID: WorkspaceDescriptor] = [:]
     private var workspaceIdByName: [String: WorkspaceDescriptor.ID] = [:]
 
-    private var visibleWorkspaces: BiMap<Monitor.ID, WorkspaceDescriptor.ID> = .init()
-    private var monitorIdToPrevVisibleWorkspace: [Monitor.ID: WorkspaceDescriptor.ID] = [:]
-
     private(set) var gaps: Double = 8
     private(set) var outerGaps: LayoutGaps.OuterGaps = .zero
     private let windows = WindowModel()
 
     private var _cachedSortedWorkspaces: [WorkspaceDescriptor]?
-    private var niriViewportStates: [WorkspaceDescriptor.ID: ViewportState] = [:]
     var animationClock: AnimationClock?
+    private var sessionState = SessionState()
 
     var onGapsChanged: (() -> Void)?
+    var onSessionStateChanged: (() -> Void)?
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -80,6 +68,7 @@ final class WorkspaceManager {
         }
         rebuildMonitorIndexes()
         applySettings()
+        reconcileInteractionMonitorState(notify: false)
     }
 
     func monitor(byId id: Monitor.ID) -> Monitor? {
@@ -93,6 +82,114 @@ final class WorkspaceManager {
 
     func monitors(named name: String) -> [Monitor] {
         _monitorsByName[name] ?? []
+    }
+
+    var interactionMonitorId: Monitor.ID? {
+        sessionState.interactionMonitorId
+    }
+
+    var previousInteractionMonitorId: Monitor.ID? {
+        sessionState.previousInteractionMonitorId
+    }
+
+    var focusedHandle: WindowHandle? {
+        sessionState.focus.focusedHandle
+    }
+
+    var lastFocusedByWorkspace: [WorkspaceDescriptor.ID: WindowHandle] {
+        sessionState.focus.lastFocusedByWorkspace
+    }
+
+    var isNonManagedFocusActive: Bool {
+        sessionState.focus.isNonManagedFocusActive
+    }
+
+    var isAppFullscreenActive: Bool {
+        sessionState.focus.isAppFullscreenActive
+    }
+
+    @discardableResult
+    func setInteractionMonitor(_ monitorId: Monitor.ID?, preservePrevious: Bool = true) -> Bool {
+        let normalizedMonitorId = monitorId.flatMap { self.monitor(byId: $0)?.id }
+        return updateInteractionMonitor(normalizedMonitorId, preservePrevious: preservePrevious, notify: true)
+    }
+
+    @discardableResult
+    func setPreviousInteractionMonitor(_ monitorId: Monitor.ID?) -> Bool {
+        let normalizedMonitorId = monitorId.flatMap { self.monitor(byId: $0)?.id }
+        guard sessionState.previousInteractionMonitorId != normalizedMonitorId else { return false }
+        sessionState.previousInteractionMonitorId = normalizedMonitorId
+        notifySessionStateChanged()
+        return true
+    }
+
+    @discardableResult
+    func setFocusedHandle(_ handle: WindowHandle?, in workspaceId: WorkspaceDescriptor.ID? = nil) -> Bool {
+        let focusChanged = sessionState.focus.focusedHandle != handle
+        sessionState.focus.focusedHandle = handle
+
+        if let workspaceId, let handle {
+            sessionState.focus.lastFocusedByWorkspace[workspaceId] = handle
+        }
+
+        if focusChanged {
+            notifySessionStateChanged()
+        }
+
+        return focusChanged
+    }
+
+    @discardableResult
+    func rememberFocus(_ handle: WindowHandle, in workspaceId: WorkspaceDescriptor.ID) -> Bool {
+        guard sessionState.focus.lastFocusedByWorkspace[workspaceId] != handle else { return false }
+        sessionState.focus.lastFocusedByWorkspace[workspaceId] = handle
+        return true
+    }
+
+    @discardableResult
+    func clearLastFocusedHandle(in workspaceId: WorkspaceDescriptor.ID) -> Bool {
+        guard sessionState.focus.lastFocusedByWorkspace[workspaceId] != nil else { return false }
+        sessionState.focus.lastFocusedByWorkspace[workspaceId] = nil
+        return true
+    }
+
+    func lastFocusedHandle(in workspaceId: WorkspaceDescriptor.ID) -> WindowHandle? {
+        sessionState.focus.lastFocusedByWorkspace[workspaceId]
+    }
+
+    @discardableResult
+    func clearFocus() -> Bool {
+        guard sessionState.focus.focusedHandle != nil else { return false }
+        sessionState.focus.focusedHandle = nil
+        notifySessionStateChanged()
+        return true
+    }
+
+    func setNonManagedFocus(active: Bool) {
+        sessionState.focus.isNonManagedFocusActive = active
+    }
+
+    func setAppFullscreen(active: Bool) {
+        sessionState.focus.isAppFullscreenActive = active
+    }
+
+    func handleWindowRemoved(_ handle: WindowHandle, in workspaceId: WorkspaceDescriptor.ID?) {
+        var focusChanged = false
+
+        if sessionState.focus.focusedHandle?.id == handle.id {
+            sessionState.focus.focusedHandle = nil
+            focusChanged = true
+        }
+
+        if let workspaceId,
+           sessionState.focus.lastFocusedByWorkspace[workspaceId]?.id == handle.id
+        {
+            sessionState.focus.lastFocusedByWorkspace[workspaceId] = nil
+        }
+
+        if focusChanged {
+            notifySessionStateChanged()
+        }
     }
 
     private func rebuildMonitorIndexes() {
@@ -144,15 +241,19 @@ final class WorkspaceManager {
 
     func activeWorkspace(on monitorId: Monitor.ID) -> WorkspaceDescriptor? {
         ensureVisibleWorkspaces()
+        return currentActiveWorkspace(on: monitorId)
+    }
+
+    func currentActiveWorkspace(on monitorId: Monitor.ID) -> WorkspaceDescriptor? {
         guard let mon = monitor(byId: monitorId) else { return nil }
-        guard let workspaceId = visibleWorkspaces[forward: mon.id] else { return nil }
+        guard let workspaceId = visibleWorkspaceId(on: mon.id) else { return nil }
         return descriptor(for: workspaceId)
     }
 
     func previousWorkspace(on monitorId: Monitor.ID) -> WorkspaceDescriptor? {
         guard let monitor = monitor(byId: monitorId) else { return nil }
-        guard let prevId = monitorIdToPrevVisibleWorkspace[monitor.id] else { return nil }
-        guard prevId != visibleWorkspaces[forward: monitor.id] else { return nil }
+        guard let prevId = previousVisibleWorkspaceId(on: monitor.id) else { return nil }
+        guard prevId != visibleWorkspaceId(on: monitor.id) else { return nil }
         return descriptor(for: prevId)
     }
 
@@ -178,12 +279,12 @@ final class WorkspaceManager {
         }
         guard let mon = monitor(byId: monitorId) else { return nil }
         let stubId = getStubWorkspaceId(for: mon.id)
-        _ = setActiveWorkspace(stubId, on: mon)
+        _ = setActiveWorkspaceInternal(stubId, on: mon.id, anchorPoint: mon.workspaceAnchorPoint)
         return descriptor(for: stubId)
     }
 
     func visibleWorkspaceIds() -> Set<WorkspaceDescriptor.ID> {
-        Set(visibleWorkspaces.forward.values)
+        Set(activeVisibleWorkspaceMap().values)
     }
 
     private func adjacentWorkspaceInOrder(
@@ -209,7 +310,7 @@ final class WorkspaceManager {
         ensureVisibleWorkspaces()
         guard let workspaceId = workspaceId(for: name, createIfMissing: true) else { return nil }
         guard let targetMonitor = monitorForWorkspace(workspaceId) else { return nil }
-        guard setActiveWorkspace(workspaceId, on: targetMonitor) else { return nil }
+        guard setActiveWorkspace(workspaceId, on: targetMonitor.id) else { return nil }
         guard let workspace = descriptor(for: workspaceId) else { return nil }
         return (workspace, targetMonitor)
     }
@@ -226,11 +327,13 @@ final class WorkspaceManager {
         monitors = newMonitors.isEmpty ? [Monitor.fallback()] : newMonitors
         ensureVisibleWorkspaces(previousMonitors: previousMonitors)
         reconcileForcedVisibleWorkspaces()
+        reconcileInteractionMonitorState()
     }
 
     func reconcileAfterMonitorChange() {
         ensureVisibleWorkspaces()
         reconcileForcedVisibleWorkspaces()
+        reconcileInteractionMonitorState()
     }
 
     func setGaps(to size: Double) {
@@ -373,10 +476,21 @@ final class WorkspaceManager {
 
         guard isValidAssignment(workspaceId: workspaceId, monitorId: targetMonitor.id) else { return false }
 
-        guard setActiveWorkspace(workspaceId, on: targetMonitor) else { return false }
+        guard setActiveWorkspaceInternal(
+            workspaceId,
+            on: targetMonitor.id,
+            anchorPoint: targetMonitor.workspaceAnchorPoint,
+            updateInteractionMonitor: true
+        ) else {
+            return false
+        }
 
         let stubId = getStubWorkspaceId(for: sourceMonitor.id)
-        _ = setActiveWorkspace(stubId, on: sourceMonitor.id)
+        _ = setActiveWorkspaceInternal(
+            stubId,
+            on: sourceMonitor.id,
+            anchorPoint: sourceMonitor.workspaceAnchorPoint
+        )
 
         return true
     }
@@ -395,22 +509,26 @@ final class WorkspaceManager {
         guard isValidAssignment(workspaceId: workspace1Id, monitorId: monitor2.id),
               isValidAssignment(workspaceId: workspace2Id, monitorId: monitor1.id) else { return false }
 
-        monitorIdToPrevVisibleWorkspace[monitor1.id] = visibleWorkspaces[forward: monitor1.id]
-        monitorIdToPrevVisibleWorkspace[monitor2.id] = visibleWorkspaces[forward: monitor2.id]
+        let previousWorkspace1 = visibleWorkspaceId(on: monitor1.id)
+        let previousWorkspace2 = visibleWorkspaceId(on: monitor2.id)
 
-        visibleWorkspaces.removeByReverse(workspace1Id)
-        visibleWorkspaces.removeByReverse(workspace2Id)
-
-        visibleWorkspaces.set(monitor1.id, workspace2Id)
+        updateMonitorSession(monitor1.id) { session in
+            session.previousVisibleWorkspaceId = previousWorkspace1
+            session.visibleWorkspaceId = workspace2Id
+        }
         updateWorkspace(workspace2Id) { workspace in
             workspace.assignedMonitorPoint = monitor1.workspaceAnchorPoint
         }
 
-        visibleWorkspaces.set(monitor2.id, workspace1Id)
+        updateMonitorSession(monitor2.id) { session in
+            session.previousVisibleWorkspaceId = previousWorkspace2
+            session.visibleWorkspaceId = workspace1Id
+        }
         updateWorkspace(workspace1Id) { workspace in
             workspace.assignedMonitorPoint = monitor2.workspaceAnchorPoint
         }
 
+        notifySessionStateChanged()
         return true
     }
 
@@ -418,7 +536,7 @@ final class WorkspaceManager {
         guard let workspaceId = workspaceId(for: workspaceName, createIfMissing: false) else { return nil }
         guard let focusedMonitor = monitor(byId: focusedMonitorId) else { return nil }
 
-        if visibleWorkspaces[forward: focusedMonitor.id] == workspaceId { return nil }
+        if visibleWorkspaceId(on: focusedMonitor.id) == workspaceId { return nil }
         guard setActiveWorkspace(workspaceId, on: focusedMonitor.id) else { return nil }
         return descriptor(for: workspaceId)
     }
@@ -429,9 +547,18 @@ final class WorkspaceManager {
         return summonWorkspace(named: workspace.name, to: targetMonitorId) != nil
     }
 
-    func setActiveWorkspace(_ workspaceId: WorkspaceDescriptor.ID, on monitorId: Monitor.ID) -> Bool {
+    func setActiveWorkspace(
+        _ workspaceId: WorkspaceDescriptor.ID,
+        on monitorId: Monitor.ID,
+        updateInteractionMonitor: Bool = true
+    ) -> Bool {
         guard let monitor = monitor(byId: monitorId) else { return false }
-        return setActiveWorkspaceInternal(workspaceId, on: monitor)
+        return setActiveWorkspaceInternal(
+            workspaceId,
+            on: monitor.id,
+            anchorPoint: monitor.workspaceAnchorPoint,
+            updateInteractionMonitor: updateInteractionMonitor
+        )
     }
 
     func assignWorkspaceToMonitor(_ workspaceId: WorkspaceDescriptor.ID, monitorId: Monitor.ID) {
@@ -451,7 +578,7 @@ final class WorkspaceManager {
     }
 
     func niriViewportState(for workspaceId: WorkspaceDescriptor.ID) -> ViewportState {
-        if let state = niriViewportStates[workspaceId] {
+        if let state = sessionState.workspaceSessions[workspaceId]?.niriViewportState {
             return state
         }
         var newState = ViewportState()
@@ -460,7 +587,9 @@ final class WorkspaceManager {
     }
 
     func updateNiriViewportState(_ state: ViewportState, for workspaceId: WorkspaceDescriptor.ID) {
-        niriViewportStates[workspaceId] = state
+        var workspaceSession = sessionState.workspaceSessions[workspaceId] ?? SessionState.WorkspaceSession()
+        workspaceSession.niriViewportState = state
+        sessionState.workspaceSessions[workspaceId] = workspaceSession
     }
 
     func withNiriViewportState(
@@ -469,7 +598,7 @@ final class WorkspaceManager {
     ) {
         var state = niriViewportState(for: workspaceId)
         mutate(&state)
-        niriViewportStates[workspaceId] = state
+        updateNiriViewportState(state, for: workspaceId)
     }
 
     func setSelection(_ nodeId: NodeId?, for workspaceId: WorkspaceDescriptor.ID) {
@@ -478,8 +607,8 @@ final class WorkspaceManager {
 
     func updateAnimationClock(_ clock: AnimationClock?) {
         animationClock = clock
-        for workspaceId in niriViewportStates.keys {
-            niriViewportStates[workspaceId]?.animationClock = clock
+        for workspaceId in sessionState.workspaceSessions.keys {
+            sessionState.workspaceSessions[workspaceId]?.niriViewportState?.animationClock = clock
         }
     }
 
@@ -505,14 +634,26 @@ final class WorkspaceManager {
 
         for id in toRemove {
             workspacesById.removeValue(forKey: id)
-            visibleWorkspaces.removeByReverse(id)
-            niriViewportStates.removeValue(forKey: id)
+            sessionState.workspaceSessions.removeValue(forKey: id)
+            sessionState.focus.lastFocusedByWorkspace.removeValue(forKey: id)
         }
         if !toRemove.isEmpty {
             _cachedSortedWorkspaces = nil
             workspaceIdByName = workspaceIdByName.filter { !toRemove.contains($0.value) }
-            monitorIdToPrevVisibleWorkspace = monitorIdToPrevVisibleWorkspace
-                .filter { !toRemove.contains($0.value) }
+            for monitorId in sessionState.monitorSessions.keys {
+                updateMonitorSession(monitorId) { session in
+                    if let visibleWorkspaceId = session.visibleWorkspaceId,
+                       toRemove.contains(visibleWorkspaceId)
+                    {
+                        session.visibleWorkspaceId = nil
+                    }
+                    if let previousVisibleWorkspaceId = session.previousVisibleWorkspaceId,
+                       toRemove.contains(previousVisibleWorkspaceId)
+                    {
+                        session.previousVisibleWorkspaceId = nil
+                    }
+                }
+            }
         }
     }
 
@@ -698,27 +839,38 @@ final class WorkspaceManager {
         }
 
         for (workspaceId, forcedMonitor) in forcedTargets {
-            guard let currentMonitorId = visibleWorkspaces[reverse: workspaceId] else { continue }
+            guard let currentMonitorId = monitorIdShowingWorkspace(workspaceId) else { continue }
             if currentMonitorId != forcedMonitor.id {
-                _ = setActiveWorkspace(workspaceId, on: forcedMonitor)
+                _ = setActiveWorkspaceInternal(
+                    workspaceId,
+                    on: forcedMonitor.id,
+                    anchorPoint: forcedMonitor.workspaceAnchorPoint
+                )
             }
         }
     }
 
     private func ensureVisibleWorkspaces(previousMonitors: [Monitor]? = nil) {
         let currentMonitorIds = Set(monitors.map(\.id))
-        let mappingMonitorIds = Set(visibleWorkspaces.forward.keys)
-        monitorIdToPrevVisibleWorkspace = monitorIdToPrevVisibleWorkspace.filter { currentMonitorIds.contains($0.key) }
+        let previousMonitorSessions = sessionState.monitorSessions
+        let mappingMonitorIds = Set(previousMonitorSessions.keys)
+        sessionState.monitorSessions = previousMonitorSessions.filter { currentMonitorIds.contains($0.key) }
         if currentMonitorIds != mappingMonitorIds {
-            rearrangeWorkspacesOnMonitors(previousMonitors: previousMonitors)
+            rearrangeWorkspacesOnMonitors(
+                previousMonitors: previousMonitors,
+                previousMonitorSessions: previousMonitorSessions
+            )
         }
     }
 
-    private func rearrangeWorkspacesOnMonitors(previousMonitors: [Monitor]? = nil) {
+    private func rearrangeWorkspacesOnMonitors(
+        previousMonitors: [Monitor]? = nil,
+        previousMonitorSessions: [Monitor.ID: SessionState.MonitorSession]? = nil
+    ) {
         // Keep traversal deterministic so startup workspace mapping is stable.
         let sortedNewMonitors = Monitor.sortedByPosition(monitors)
 
-        let oldForward = visibleWorkspaces.forward
+        let oldForward = activeVisibleWorkspaceMap(from: previousMonitorSessions ?? sessionState.monitorSessions)
         var oldMonitorById: [Monitor.ID: Monitor] = [:]
 
         let oldCandidates = previousMonitors ?? monitors
@@ -752,18 +904,32 @@ final class WorkspaceManager {
             newToOld[newMonitor.id] = bestOldId
         }
 
-        visibleWorkspaces.removeAll()
+        sessionState.monitorSessions = sessionState.monitorSessions.mapValues { session in
+            var pruned = session
+            pruned.visibleWorkspaceId = nil
+            return pruned
+        }
 
         for newMonitor in sortedNewMonitors {
             if let oldId = newToOld[newMonitor.id],
                let existingWorkspaceId = oldForward[oldId],
-               setActiveWorkspace(existingWorkspaceId, on: newMonitor.id)
+               setActiveWorkspaceInternal(
+                   existingWorkspaceId,
+                   on: newMonitor.id,
+                   anchorPoint: newMonitor.workspaceAnchorPoint
+               )
             {
                 continue
             }
             let stubId = getStubWorkspaceId(for: newMonitor.id)
-            _ = setActiveWorkspace(stubId, on: newMonitor.id)
+            _ = setActiveWorkspaceInternal(
+                stubId,
+                on: newMonitor.id,
+                anchorPoint: newMonitor.workspaceAnchorPoint
+            )
         }
+
+        notifySessionStateChanged()
     }
 
     private func getStubWorkspaceId(for monitorId: Monitor.ID) -> WorkspaceDescriptor.ID {
@@ -771,7 +937,7 @@ final class WorkspaceManager {
             return getFallbackWorkspaceId()
         }
 
-        if let prevId = monitorIdToPrevVisibleWorkspace[monitorId],
+        if let prevId = previousVisibleWorkspaceId(on: monitorId),
            let prev = descriptor(for: prevId),
            !visibleWorkspaceIds().contains(prevId),
            forceAssignedMonitor(for: prev.name) == nil,
@@ -839,7 +1005,7 @@ final class WorkspaceManager {
         if let forced = forceAssignedMonitor(for: workspace.name) {
             return forced.id
         }
-        if let visibleMonitorId = visibleWorkspaces[reverse: workspaceId] {
+        if let visibleMonitorId = monitorIdShowingWorkspace(workspaceId) {
             return visibleMonitorId
         }
         if let assigned = workspace.assignedMonitorPoint {
@@ -866,36 +1032,50 @@ final class WorkspaceManager {
         return true
     }
 
-    private func setActiveWorkspace(_ workspaceId: WorkspaceDescriptor.ID, on monitor: Monitor) -> Bool {
-        setActiveWorkspaceInternal(workspaceId, on: monitor)
-    }
-
-    private func setActiveWorkspaceInternal(_ workspaceId: WorkspaceDescriptor.ID, on monitor: Monitor) -> Bool {
-        setActiveWorkspaceInternal(workspaceId, on: monitor.id, anchorPoint: monitor.workspaceAnchorPoint)
-    }
-
     private func setActiveWorkspaceInternal(
         _ workspaceId: WorkspaceDescriptor.ID,
         on monitorId: Monitor.ID,
-        anchorPoint: CGPoint? = nil
+        anchorPoint: CGPoint? = nil,
+        updateInteractionMonitor: Bool = false
     ) -> Bool {
         guard isValidAssignment(workspaceId: workspaceId, monitorId: monitorId) else { return false }
         let effectiveAnchorPoint = anchorPoint ?? monitor(byId: monitorId)?.workspaceAnchorPoint
+        var workspaceVisibilityChanged = false
 
-        if let prevMonitorId = visibleWorkspaces[reverse: workspaceId] {
-            visibleWorkspaces.removeByReverse(workspaceId)
-            monitorIdToPrevVisibleWorkspace[prevMonitorId] = workspaceId
+        if let prevMonitorId = monitorIdShowingWorkspace(workspaceId),
+           prevMonitorId != monitorId
+        {
+            updateMonitorSession(prevMonitorId) { session in
+                session.previousVisibleWorkspaceId = workspaceId
+                session.visibleWorkspaceId = nil
+            }
+            workspaceVisibilityChanged = true
         }
 
-        if let prevWorkspace = visibleWorkspaces[forward: monitorId] {
-            monitorIdToPrevVisibleWorkspace[monitorId] = prevWorkspace
-            visibleWorkspaces.removeByReverse(prevWorkspace)
+        let previousWorkspaceOnMonitor = visibleWorkspaceId(on: monitorId)
+        if previousWorkspaceOnMonitor != workspaceId {
+            updateMonitorSession(monitorId) { session in
+                if let previousWorkspaceOnMonitor {
+                    session.previousVisibleWorkspaceId = previousWorkspaceOnMonitor
+                }
+                session.visibleWorkspaceId = workspaceId
+            }
+            workspaceVisibilityChanged = true
         }
 
-        visibleWorkspaces.set(monitorId, workspaceId)
         updateWorkspace(workspaceId) { workspace in
             workspace.assignedMonitorPoint = effectiveAnchorPoint
         }
+
+        if updateInteractionMonitor {
+            let interactionChanged = self.updateInteractionMonitor(monitorId, preservePrevious: true, notify: true)
+            if workspaceVisibilityChanged, !interactionChanged {
+                notifySessionStateChanged()
+            }
+        } else if workspaceVisibilityChanged {
+            notifySessionStateChanged()
+        }
+
         return true
     }
 
@@ -918,6 +1098,88 @@ final class WorkspaceManager {
         workspaceIdByName[workspace.name] = workspace.id
         _cachedSortedWorkspaces = nil
         return workspace.id
+    }
+
+    private func visibleWorkspaceId(on monitorId: Monitor.ID) -> WorkspaceDescriptor.ID? {
+        sessionState.monitorSessions[monitorId]?.visibleWorkspaceId
+    }
+
+    private func previousVisibleWorkspaceId(on monitorId: Monitor.ID) -> WorkspaceDescriptor.ID? {
+        sessionState.monitorSessions[monitorId]?.previousVisibleWorkspaceId
+    }
+
+    private func monitorIdShowingWorkspace(_ workspaceId: WorkspaceDescriptor.ID) -> Monitor.ID? {
+        sessionState.monitorSessions.first { $0.value.visibleWorkspaceId == workspaceId }?.key
+    }
+
+    private func activeVisibleWorkspaceMap() -> [Monitor.ID: WorkspaceDescriptor.ID] {
+        activeVisibleWorkspaceMap(from: sessionState.monitorSessions)
+    }
+
+    private func activeVisibleWorkspaceMap(
+        from monitorSessions: [Monitor.ID: SessionState.MonitorSession]
+    ) -> [Monitor.ID: WorkspaceDescriptor.ID] {
+        Dictionary(uniqueKeysWithValues: monitorSessions.compactMap { monitorId, session in
+            guard let visibleWorkspaceId = session.visibleWorkspaceId else { return nil }
+            return (monitorId, visibleWorkspaceId)
+        })
+    }
+
+    private func updateMonitorSession(
+        _ monitorId: Monitor.ID,
+        _ mutate: (inout SessionState.MonitorSession) -> Void
+    ) {
+        var monitorSession = sessionState.monitorSessions[monitorId] ?? SessionState.MonitorSession()
+        mutate(&monitorSession)
+        if monitorSession.visibleWorkspaceId == nil, monitorSession.previousVisibleWorkspaceId == nil {
+            sessionState.monitorSessions.removeValue(forKey: monitorId)
+        } else {
+            sessionState.monitorSessions[monitorId] = monitorSession
+        }
+    }
+
+    @discardableResult
+    private func updateInteractionMonitor(
+        _ monitorId: Monitor.ID?,
+        preservePrevious: Bool,
+        notify: Bool
+    ) -> Bool {
+        guard sessionState.interactionMonitorId != monitorId else { return false }
+        if preservePrevious,
+           let currentMonitorId = sessionState.interactionMonitorId,
+           currentMonitorId != monitorId
+        {
+            sessionState.previousInteractionMonitorId = currentMonitorId
+        }
+        sessionState.interactionMonitorId = monitorId
+        if notify {
+            notifySessionStateChanged()
+        }
+        return true
+    }
+
+    private func reconcileInteractionMonitorState(notify: Bool = true) {
+        let validMonitorIds = Set(monitors.map(\.id))
+        let newInteractionMonitorId = sessionState.interactionMonitorId.flatMap {
+            validMonitorIds.contains($0) ? $0 : nil
+        } ?? monitors.first?.id
+        let newPreviousInteractionMonitorId = sessionState.previousInteractionMonitorId.flatMap {
+            validMonitorIds.contains($0) ? $0 : nil
+        }
+
+        let changed = sessionState.interactionMonitorId != newInteractionMonitorId
+            || sessionState.previousInteractionMonitorId != newPreviousInteractionMonitorId
+
+        sessionState.interactionMonitorId = newInteractionMonitorId
+        sessionState.previousInteractionMonitorId = newPreviousInteractionMonitorId
+
+        if changed, notify {
+            notifySessionStateChanged()
+        }
+    }
+
+    private func notifySessionStateChanged() {
+        onSessionStateChanged?()
     }
 }
 

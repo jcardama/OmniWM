@@ -27,15 +27,16 @@ final class WorkspaceNavigationHandler {
         if previousWorkspace?.id == targetWorkspace.id {
             return false
         }
+        guard let previousWorkspace else { return false }
 
         let niriMonitor = engine.monitor(for: monitor.id)
             ?? engine.ensureMonitor(for: monitor.id, monitor: monitor)
-        niriMonitor.workspaceOrder = controller.workspaceManager.workspaces(on: monitor.id).map(\.id)
         niriMonitor.animationClock = controller.animationClock
-        if let previousWorkspace {
-            niriMonitor.activateWorkspace(previousWorkspace.id)
-        }
-        niriMonitor.activateWorkspaceAnimated(targetWorkspace.id)
+        niriMonitor.startWorkspaceSwitch(
+            orderedWorkspaceIds: controller.workspaceManager.workspaces(on: monitor.id).map(\.id),
+            from: previousWorkspace.id,
+            to: targetWorkspace.id
+        )
         return niriMonitor.isWorkspaceSwitchAnimating
     }
 
@@ -204,7 +205,7 @@ final class WorkspaceNavigationHandler {
 
         saveNiriViewportState(for: currentWsId)
         if let engine = controller.niriEngine {
-            if let targetHandle = controller.focusManager.lastFocusedByWorkspace[targetWsId],
+            if let targetHandle = controller.workspaceManager.lastFocusedHandle(in: targetWsId),
                let targetNode = engine.findNode(for: targetHandle)
             {
                 controller.workspaceManager.setSelection(targetNode.id, for: targetWsId)

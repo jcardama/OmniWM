@@ -89,4 +89,91 @@ private func makeWorkspaceManagerTestMonitor(
         #expect(manager.adjacentMonitor(from: right.id, direction: .right, wrapAround: true)?.id == left.id)
         #expect(manager.adjacentMonitor(from: left.id, direction: .left, wrapAround: true)?.id == right.id)
     }
+
+    @Test @MainActor func setActiveWorkspaceTracksInteractionMonitorOwnership() {
+        let defaults = makeWorkspaceManagerTestDefaults()
+        let settings = SettingsStore(defaults: defaults)
+        settings.workspaceConfigurations = [
+            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
+            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
+        ]
+
+        let manager = WorkspaceManager(settings: settings)
+        let left = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Left", x: 0, y: 0)
+        let right = makeWorkspaceManagerTestMonitor(displayId: 20, name: "Right", x: 1920, y: 0)
+        manager.updateMonitors([left, right])
+
+        guard let ws1 = manager.workspaceId(for: "1", createIfMissing: true),
+              let ws2 = manager.workspaceId(for: "2", createIfMissing: true) else {
+            Issue.record("Failed to create workspaces")
+            return
+        }
+
+        #expect(manager.setActiveWorkspace(ws1, on: left.id))
+        #expect(manager.interactionMonitorId == left.id)
+
+        #expect(manager.setActiveWorkspace(ws2, on: right.id))
+        #expect(manager.interactionMonitorId == right.id)
+        #expect(manager.previousInteractionMonitorId == left.id)
+        #expect(manager.activeWorkspace(on: left.id)?.id == ws1)
+        #expect(manager.activeWorkspace(on: right.id)?.id == ws2)
+    }
+
+    @Test @MainActor func moveWorkspaceToMonitorUpdatesVisibleAndPreviousWorkspaceState() {
+        let defaults = makeWorkspaceManagerTestDefaults()
+        let settings = SettingsStore(defaults: defaults)
+        settings.workspaceConfigurations = [
+            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
+            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
+        ]
+
+        let manager = WorkspaceManager(settings: settings)
+        let left = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Left", x: 0, y: 0)
+        let right = makeWorkspaceManagerTestMonitor(displayId: 20, name: "Right", x: 1920, y: 0)
+        manager.updateMonitors([left, right])
+
+        guard let ws1 = manager.workspaceId(for: "1", createIfMissing: true),
+              let ws2 = manager.workspaceId(for: "2", createIfMissing: true) else {
+            Issue.record("Failed to create workspaces")
+            return
+        }
+
+        #expect(manager.setActiveWorkspace(ws1, on: left.id))
+        #expect(manager.setActiveWorkspace(ws2, on: right.id))
+
+        #expect(manager.moveWorkspaceToMonitor(ws1, to: right.id))
+        #expect(manager.interactionMonitorId == right.id)
+        #expect(manager.previousInteractionMonitorId == left.id)
+        #expect(manager.activeWorkspace(on: right.id)?.id == ws1)
+        #expect(manager.previousWorkspace(on: right.id)?.id == ws2)
+        #expect(manager.activeWorkspace(on: left.id)?.id != ws1)
+    }
+
+    @Test @MainActor func viewportStatePersistsAcrossWorkspaceTransitions() {
+        let defaults = makeWorkspaceManagerTestDefaults()
+        let settings = SettingsStore(defaults: defaults)
+        settings.workspaceConfigurations = [
+            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
+            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
+        ]
+
+        let manager = WorkspaceManager(settings: settings)
+        let monitor = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Main", x: 0, y: 0)
+        manager.updateMonitors([monitor])
+
+        guard let ws1 = manager.workspaceId(for: "1", createIfMissing: true),
+              let ws2 = manager.workspaceId(for: "2", createIfMissing: true) else {
+            Issue.record("Failed to create workspaces")
+            return
+        }
+
+        var viewport = manager.niriViewportState(for: ws1)
+        viewport.activeColumnIndex = 2
+        manager.updateNiriViewportState(viewport, for: ws1)
+
+        #expect(manager.setActiveWorkspace(ws1, on: monitor.id))
+        #expect(manager.setActiveWorkspace(ws2, on: monitor.id))
+        #expect(manager.setActiveWorkspace(ws1, on: monitor.id))
+        #expect(manager.niriViewportState(for: ws1).activeColumnIndex == 2)
+    }
 }

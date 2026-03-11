@@ -39,6 +39,14 @@ private func makeFocusTestWindow(windowId: Int = 101) -> AXWindowRef {
     AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: windowId)
 }
 
+private final class NotificationValueBox<Value>: @unchecked Sendable {
+    var value: Value
+
+    init(_ value: Value) {
+        self.value = value
+    }
+}
+
 @MainActor
 private func makeFocusTestController(
     windowFocusOperations: WindowFocusOperations
@@ -96,5 +104,94 @@ private func makeFocusTestController(
 
         #expect(controller.focusManager.isNonManagedFocusActive == false)
         #expect(controller.focusManager.lastFocusedByWorkspace[workspaceId] == handle)
+    }
+
+    @Test @MainActor func controllerFocusAccessorsReflectWorkspaceManagerOwnedState() {
+        let operations = WindowFocusOperations(
+            activateApp: { _ in },
+            focusSpecificWindow: { _, _, _ in },
+            raiseWindow: { _ in }
+        )
+        let (controller, workspaceId, handle) = makeFocusTestController(windowFocusOperations: operations)
+
+        controller.focusManager.setFocus(handle, in: workspaceId)
+
+        #expect(controller.focusedHandle == handle)
+        #expect(controller.workspaceManager.focusedHandle == handle)
+        #expect(controller.workspaceManager.lastFocusedHandle(in: workspaceId) == handle)
+        #expect(controller.activeMonitorId == controller.workspaceManager.interactionMonitorId)
+    }
+
+    @Test @MainActor func focusNotificationsTrackWorkspaceManagerOwnedState() {
+        let operations = WindowFocusOperations(
+            activateApp: { _ in },
+            focusSpecificWindow: { _, _, _ in },
+            raiseWindow: { _ in }
+        )
+        let (controller, workspaceId, handle) = makeFocusTestController(windowFocusOperations: operations)
+        let secondaryMonitor = makeFocusTestMonitor(
+            displayId: 2,
+            name: "Secondary",
+            x: 1920
+        )
+        controller.workspaceManager.updateMonitors([
+            makeFocusTestMonitor(),
+            secondaryMonitor
+        ])
+        controller.workspaceManager.reconcileAfterMonitorChange()
+
+        guard let workspace2 = controller.workspaceManager.workspaceId(for: "2", createIfMissing: true) else {
+            Issue.record("Failed to create secondary workspace")
+            return
+        }
+        #expect(controller.workspaceManager.setActiveWorkspace(workspace2, on: secondaryMonitor.id))
+
+        let window2 = makeFocusTestWindow(windowId: 202)
+        let handle2 = controller.workspaceManager.addWindow(
+            window2,
+            pid: getpid(),
+            windowId: window2.windowId,
+            to: workspace2
+        )
+
+        let focusHandleId = NotificationValueBox<UUID?>(nil)
+        let workspaceIdBox = NotificationValueBox<WorkspaceDescriptor.ID?>(nil)
+        let monitorDisplayIdBox = NotificationValueBox<CGDirectDisplayID?>(nil)
+
+        let center = NotificationCenter.default
+        let focusObserver = center.addObserver(
+            forName: .omniwmFocusChanged,
+            object: controller,
+            queue: nil
+        ) { notification in
+            focusHandleId.value = notification.userInfo?[OmniWMFocusNotificationKey.newHandleId] as? UUID
+        }
+        let workspaceObserver = center.addObserver(
+            forName: .omniwmFocusedWorkspaceChanged,
+            object: controller,
+            queue: nil
+        ) { notification in
+            workspaceIdBox.value = notification.userInfo?[OmniWMFocusNotificationKey.newWorkspaceId] as? WorkspaceDescriptor.ID
+        }
+        let monitorObserver = center.addObserver(
+            forName: .omniwmFocusedMonitorChanged,
+            object: controller,
+            queue: nil
+        ) { notification in
+            monitorDisplayIdBox.value = notification.userInfo?[OmniWMFocusNotificationKey.newMonitorIndex] as? CGDirectDisplayID
+        }
+
+        defer {
+            center.removeObserver(focusObserver)
+            center.removeObserver(workspaceObserver)
+            center.removeObserver(monitorObserver)
+        }
+
+        controller.focusManager.setFocus(handle, in: workspaceId)
+        controller.focusManager.setFocus(handle2, in: workspace2)
+
+        #expect(focusHandleId.value == handle2.id)
+        #expect(workspaceIdBox.value == workspace2)
+        #expect(monitorDisplayIdBox.value == secondaryMonitor.displayId)
     }
 }

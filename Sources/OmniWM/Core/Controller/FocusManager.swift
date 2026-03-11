@@ -2,10 +2,12 @@ import Foundation
 
 @MainActor
 final class FocusManager {
-    private(set) var focusedHandle: WindowHandle?
-    private(set) var lastFocusedByWorkspace: [WorkspaceDescriptor.ID: WindowHandle] = [:]
-    private(set) var isNonManagedFocusActive: Bool = false
-    private(set) var isAppFullscreenActive: Bool = false
+    private let workspaceManager: WorkspaceManager
+
+    var focusedHandle: WindowHandle? { workspaceManager.focusedHandle }
+    var lastFocusedByWorkspace: [WorkspaceDescriptor.ID: WindowHandle] { workspaceManager.lastFocusedByWorkspace }
+    var isNonManagedFocusActive: Bool { workspaceManager.isNonManagedFocusActive }
+    var isAppFullscreenActive: Bool { workspaceManager.isAppFullscreenActive }
 
     private var pendingFocusHandle: WindowHandle?
     private var deferredFocusHandle: WindowHandle?
@@ -14,38 +16,42 @@ final class FocusManager {
 
     var onFocusedHandleChanged: ((WindowHandle?) -> Void)?
 
+    init(workspaceManager: WorkspaceManager) {
+        self.workspaceManager = workspaceManager
+    }
+
     func setNonManagedFocus(active: Bool) {
-        isNonManagedFocusActive = active
+        workspaceManager.setNonManagedFocus(active: active)
     }
 
     func setAppFullscreen(active: Bool) {
-        isAppFullscreenActive = active
+        workspaceManager.setAppFullscreen(active: active)
     }
 
     func setFocus(_ handle: WindowHandle, in workspaceId: WorkspaceDescriptor.ID) {
-        focusedHandle = handle
-        lastFocusedByWorkspace[workspaceId] = handle
+        _ = workspaceManager.setFocusedHandle(handle, in: workspaceId)
         onFocusedHandleChanged?(handle)
     }
 
     func clearFocus() {
-        focusedHandle = nil
-        onFocusedHandleChanged?(nil)
+        if workspaceManager.clearFocus() {
+            onFocusedHandleChanged?(nil)
+        }
     }
 
     func updateWorkspaceFocusMemory(_ handle: WindowHandle, for workspaceId: WorkspaceDescriptor.ID) {
-        lastFocusedByWorkspace[workspaceId] = handle
+        _ = workspaceManager.rememberFocus(handle, in: workspaceId)
     }
 
     func clearWorkspaceFocusMemory(for workspaceId: WorkspaceDescriptor.ID) {
-        lastFocusedByWorkspace[workspaceId] = nil
+        _ = workspaceManager.clearLastFocusedHandle(in: workspaceId)
     }
 
     func resolveWorkspaceFocus(
         for workspaceId: WorkspaceDescriptor.ID,
         entries: [WindowModel.Entry]
     ) -> WindowHandle? {
-        lastFocusedByWorkspace[workspaceId] ?? entries.first?.handle
+        workspaceManager.lastFocusedHandle(in: workspaceId) ?? entries.first?.handle
     }
 
     @discardableResult
@@ -87,13 +93,10 @@ final class FocusManager {
         if deferredFocusHandle?.id == handle.id {
             deferredFocusHandle = nil
         }
-        if focusedHandle?.id == handle.id {
-            clearFocus()
-        }
-        if let wsId = workspaceId,
-           lastFocusedByWorkspace[wsId]?.id == handle.id
-        {
-            lastFocusedByWorkspace[wsId] = nil
+        let wasFocused = workspaceManager.focusedHandle?.id == handle.id
+        workspaceManager.handleWindowRemoved(handle, in: workspaceId)
+        if wasFocused {
+            onFocusedHandleChanged?(nil)
         }
     }
 
@@ -119,7 +122,7 @@ final class FocusManager {
         isFocusOperationPending = true
         pendingFocusHandle = handle
         lastFocusTime = now
-        lastFocusedByWorkspace[workspaceId] = handle
+        _ = workspaceManager.rememberFocus(handle, in: workspaceId)
 
         performFocus()
 
@@ -136,10 +139,10 @@ final class FocusManager {
         workspaceManager: WorkspaceManager,
         focusWindowAction: (WindowHandle) -> Void
     ) {
-        if let focused = focusedHandle,
+        if let focused = self.workspaceManager.focusedHandle,
            workspaceManager.entry(for: focused)?.workspaceId == workspaceId
         {
-            lastFocusedByWorkspace[workspaceId] = focused
+            _ = self.workspaceManager.rememberFocus(focused, in: workspaceId)
             if let engine,
                let node = engine.findNode(for: focused)
             {
@@ -148,7 +151,7 @@ final class FocusManager {
             return
         }
 
-        if let remembered = lastFocusedByWorkspace[workspaceId],
+        if let remembered = self.workspaceManager.lastFocusedHandle(in: workspaceId),
            workspaceManager.entry(for: remembered) != nil
         {
             setFocus(remembered, in: workspaceId)

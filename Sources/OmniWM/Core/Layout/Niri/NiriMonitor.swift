@@ -19,14 +19,6 @@ final class NiriMonitor {
 
     var workspaceRoots: [WorkspaceDescriptor.ID: NiriRoot] = [:]
 
-    var workspaceOrder: [WorkspaceDescriptor.ID] = []
-
-    private(set) var activeWorkspaceIdx: Int = 0
-
-    private(set) var previousWorkspaceId: WorkspaceDescriptor.ID?
-
-    var viewportStates: [WorkspaceDescriptor.ID: ViewportState] = [:]
-
     var workspaceSwitch: WorkspaceSwitch?
 
     var animationClock: AnimationClock?
@@ -38,33 +30,12 @@ final class NiriMonitor {
 
     var resolvedSettings: ResolvedNiriSettings?
 
-    var activeWorkspaceId: WorkspaceDescriptor.ID? {
-        guard workspaceOrder.indices.contains(activeWorkspaceIdx) else { return nil }
-        return workspaceOrder[activeWorkspaceIdx]
-    }
-
-    var activeRoot: NiriRoot? {
-        guard let wsId = activeWorkspaceId else { return nil }
-        return workspaceRoots[wsId]
-    }
-
-    var activeViewportState: ViewportState? {
-        get {
-            guard let wsId = activeWorkspaceId else { return nil }
-            return viewportStates[wsId]
-        }
-        set {
-            guard let wsId = activeWorkspaceId, let newValue else { return }
-            viewportStates[wsId] = newValue
-        }
-    }
-
     var workspaceCount: Int {
-        workspaceOrder.count
+        workspaceRoots.count
     }
 
     var hasWorkspaces: Bool {
-        !workspaceOrder.isEmpty
+        !workspaceRoots.isEmpty
     }
 
     init(monitor: Monitor, orientation: Monitor.Orientation? = nil) {
@@ -98,21 +69,6 @@ final class NiriMonitor {
 }
 
 extension NiriMonitor {
-    func addWorkspace(_ workspaceId: WorkspaceDescriptor.ID, at index: Int? = nil) {
-        guard !workspaceOrder.contains(workspaceId) else { return }
-
-        let insertIdx = index ?? workspaceOrder.count
-        let clampedIdx = min(max(0, insertIdx), workspaceOrder.count)
-
-        workspaceOrder.insert(workspaceId, at: clampedIdx)
-        workspaceRoots[workspaceId] = NiriRoot(workspaceId: workspaceId)
-        viewportStates[workspaceId] = ViewportState()
-
-        if clampedIdx <= activeWorkspaceIdx, workspaceOrder.count > 1 {
-            activeWorkspaceIdx += 1
-        }
-    }
-
     func root(for workspaceId: WorkspaceDescriptor.ID) -> NiriRoot? {
         workspaceRoots[workspaceId]
     }
@@ -124,50 +80,28 @@ extension NiriMonitor {
 
         let root = NiriRoot(workspaceId: workspaceId)
         workspaceRoots[workspaceId] = root
-
-        if !workspaceOrder.contains(workspaceId) {
-            workspaceOrder.append(workspaceId)
-        }
-
-        if viewportStates[workspaceId] == nil {
-            viewportStates[workspaceId] = ViewportState()
-        }
-
         return root
     }
 
     func containsWorkspace(_ workspaceId: WorkspaceDescriptor.ID) -> Bool {
-        workspaceOrder.contains(workspaceId)
+        workspaceRoots[workspaceId] != nil
     }
 }
 
 extension NiriMonitor {
-    func activateWorkspace(at idx: Int) {
-        let clampedIdx = max(0, min(idx, workspaceOrder.count - 1))
-        if clampedIdx == activeWorkspaceIdx {
+    func startWorkspaceSwitch(
+        orderedWorkspaceIds: [WorkspaceDescriptor.ID],
+        from fromWorkspaceId: WorkspaceDescriptor.ID,
+        to toWorkspaceId: WorkspaceDescriptor.ID
+    ) {
+        guard let targetIdx = orderedWorkspaceIds.firstIndex(of: toWorkspaceId),
+              let fromIdx = orderedWorkspaceIds.firstIndex(of: fromWorkspaceId) else {
             return
         }
-        previousWorkspaceId = activeWorkspaceId
-        activeWorkspaceIdx = clampedIdx
-    }
-
-    func activateWorkspace(_ workspaceId: WorkspaceDescriptor.ID) {
-        guard let idx = workspaceOrder.firstIndex(of: workspaceId) else { return }
-        activateWorkspace(at: idx)
-    }
-
-    func activateWorkspaceAnimated(_ workspaceId: WorkspaceDescriptor.ID) {
-        guard let targetIdx = workspaceOrder.firstIndex(of: workspaceId) else { return }
-
-        if targetIdx == activeWorkspaceIdx, workspaceSwitch == nil {
-            return
-        }
+        guard targetIdx != fromIdx || workspaceSwitch != nil else { return }
 
         let now = animationClock?.now() ?? CACurrentMediaTime()
-        let currentRenderIdx = workspaceRenderIndex(at: now)
-
-        previousWorkspaceId = activeWorkspaceId
-        activeWorkspaceIdx = targetIdx
+        let currentRenderIdx = workspaceSwitch?.currentIndex(at: now) ?? Double(fromIdx)
 
         let animation = SpringAnimation(
             from: currentRenderIdx,
@@ -175,14 +109,12 @@ extension NiriMonitor {
             startTime: now,
             config: workspaceSwitchConfig
         )
-        workspaceSwitch = .animation(animation)
-    }
-
-    func workspaceRenderIndex(at time: TimeInterval = CACurrentMediaTime()) -> Double {
-        if let switch_ = workspaceSwitch {
-            return switch_.currentIndex(at: time)
-        }
-        return Double(activeWorkspaceIdx)
+        workspaceSwitch = WorkspaceSwitch(
+            orderedWorkspaceIds: orderedWorkspaceIds,
+            fromWorkspaceId: fromWorkspaceId,
+            toWorkspaceId: toWorkspaceId,
+            animation: animation
+        )
     }
 
     func tickWorkspaceSwitchAnimation(at time: TimeInterval) -> Bool {

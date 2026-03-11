@@ -772,7 +772,7 @@ import QuartzCore
             guard let currentId = state.selectedNodeId,
                   let currentNode = engine.findNode(by: currentId)
             else {
-                if let lastFocused = controller.focusManager.lastFocusedByWorkspace[wsId],
+                if let lastFocused = controller.workspaceManager.lastFocusedHandle(in: wsId),
                    let lastNode = engine.findNode(for: lastFocused)
                 {
                     self.activateNode(
@@ -908,17 +908,10 @@ import QuartzCore
             guard let monitor = controller.workspaceManager.monitor(for: workspace.id) else { continue }
             engine.moveWorkspace(workspace.id, to: monitor.id, monitor: monitor)
         }
-        // Any rescued orphan states left after this sync are stale for the current topology.
-        engine.clearOrphanedViewportStates()
 
         for monitor in currentMonitors {
-            let orderedWorkspaceIds = controller.workspaceManager.workspaces(on: monitor.id).map(\.id)
             if let niriMonitor = engine.monitor(for: monitor.id) {
-                niriMonitor.workspaceOrder = orderedWorkspaceIds
                 niriMonitor.animationClock = controller.animationClock
-                if let activeWorkspace = controller.workspaceManager.activeWorkspace(on: monitor.id) {
-                    niriMonitor.activateWorkspace(activeWorkspace.id)
-                }
             }
             let resolved = controller.settings.resolvedNiriSettings(for: monitor)
             engine.updateMonitorSettings(resolved, for: monitor.id)

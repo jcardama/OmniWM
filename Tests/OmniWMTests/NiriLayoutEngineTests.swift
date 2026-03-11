@@ -270,23 +270,19 @@ func makeTestMonitor(
         #expect(col2.savedWidth == .proportion(0.4))
     }
 
-    @Test func cleanupRemovedMonitorRescuesAndRestoresViewportStateOnMove() {
+    @Test func cleanupRemovedMonitorKeepsWorkspaceRootAuthoritativeForReattach() {
         let engine = NiriLayoutEngine(maxWindowsPerColumn: 3)
         let oldMonitor = makeTestMonitor(displayId: 100, name: "Old", x: 0)
         let newMonitor = makeTestMonitor(displayId: 200, name: "New", x: 1920)
         let wsId = UUID()
 
         let oldNiriMonitor = engine.ensureMonitor(for: oldMonitor.id, monitor: oldMonitor)
-        let rescuedRoot = NiriRoot(workspaceId: wsId)
+        let rescuedRoot = engine.ensureRoot(for: wsId)
         oldNiriMonitor.workspaceRoots[wsId] = rescuedRoot
-        oldNiriMonitor.workspaceOrder = [wsId]
-        var rescuedState = ViewportState()
-        rescuedState.activeColumnIndex = 3
-        oldNiriMonitor.viewportStates[wsId] = rescuedState
 
         engine.cleanupRemovedMonitor(oldMonitor.id)
         #expect(engine.monitor(for: oldMonitor.id) == nil)
-        #expect(engine.orphanedViewportStates[wsId]?.activeColumnIndex == 3)
+        #expect(engine.root(for: wsId) === rescuedRoot)
 
         engine.moveWorkspace(wsId, to: newMonitor.id, monitor: newMonitor)
 
@@ -296,24 +292,56 @@ func makeTestMonitor(
         if let restoredRoot = newNiriMonitor?.workspaceRoots[wsId] {
             #expect(restoredRoot === rescuedRoot)
         }
-        #expect(newNiriMonitor?.viewportStates[wsId]?.activeColumnIndex == 3)
-        #expect(engine.orphanedViewportStates[wsId] == nil)
     }
 
-    @Test func clearOrphanedViewportStatesRemovesStaleEntries() {
-        let engine = NiriLayoutEngine(maxWindowsPerColumn: 3)
-        let oldMonitor = makeTestMonitor(displayId: 300, name: "Temp", x: 0)
-        let wsId = UUID()
+    @Test func workspaceSwitchAnimationUsesSnapshotOrdering() {
+        let engine = NiriLayoutEngine(maxWindowsPerColumn: 1)
+        let monitor = makeTestMonitor(displayId: 300, name: "Main", x: 0)
+        let ws1 = UUID()
+        let ws2 = UUID()
+        let handle1 = makeTestHandle(pid: 11)
+        let handle2 = makeTestHandle(pid: 12)
 
-        let oldNiriMonitor = engine.ensureMonitor(for: oldMonitor.id, monitor: oldMonitor)
-        oldNiriMonitor.workspaceRoots[wsId] = NiriRoot(workspaceId: wsId)
-        oldNiriMonitor.workspaceOrder = [wsId]
-        oldNiriMonitor.viewportStates[wsId] = ViewportState()
+        let niriMonitor = engine.ensureMonitor(for: monitor.id, monitor: monitor)
+        niriMonitor.animationClock = AnimationClock()
 
-        engine.cleanupRemovedMonitor(oldMonitor.id)
-        #expect(engine.orphanedViewportStates[wsId] != nil)
+        _ = engine.addWindow(handle: handle1, to: ws1, afterSelection: nil)
+        _ = engine.addWindow(handle: handle2, to: ws2, afterSelection: nil)
+        engine.moveWorkspace(ws1, to: monitor.id, monitor: monitor)
+        engine.moveWorkspace(ws2, to: monitor.id, monitor: monitor)
 
-        engine.clearOrphanedViewportStates()
-        #expect(engine.orphanedViewportStates.isEmpty)
+        niriMonitor.startWorkspaceSwitch(
+            orderedWorkspaceIds: [ws1, ws2],
+            from: ws1,
+            to: ws2
+        )
+
+        guard let time = niriMonitor.animationClock?.now() else {
+            Issue.record("Expected animation clock for workspace switch test")
+            return
+        }
+        let state = ViewportState()
+        let gaps = LayoutGaps(horizontal: 8, vertical: 8)
+
+        let layout1 = engine.calculateCombinedLayoutWithVisibility(
+            in: ws1,
+            monitor: monitor,
+            gaps: gaps,
+            state: state,
+            animationTime: time
+        )
+        let layout2 = engine.calculateCombinedLayoutWithVisibility(
+            in: ws2,
+            monitor: monitor,
+            gaps: gaps,
+            state: state,
+            animationTime: time
+        )
+
+        #expect(niriMonitor.workspaceSwitch?.fromWorkspaceId == ws1)
+        #expect(niriMonitor.workspaceSwitch?.toWorkspaceId == ws2)
+        #expect(niriMonitor.workspaceSwitch?.orderedWorkspaceIds == [ws1, ws2])
+        #expect(layout1.frames[handle1]?.minX == 0)
+        #expect((layout2.frames[handle2]?.minX ?? 0) > 0)
     }
 }
