@@ -39,6 +39,8 @@ import QuartzCore
         var postLayoutActions: [PostLayoutAction] = []
         var windowRemovalPayloads: [WindowRemovalPayload] = []
         var followUpRefresh: FollowUpRefresh?
+        var needsVisibilityReconciliation: Bool = false
+        var visibilityReason: RefreshReason?
 
         init(
             kind: ScheduledRefreshKind,
@@ -396,10 +398,12 @@ import QuartzCore
     }
 
     func requestFullRescan(reason: RefreshReason) {
+        assert(reason.requestRoute == .fullRescan, "Invalid full-rescan reason: \(reason)")
         scheduleFullRescan(reason: reason)
     }
 
     func requestRelayout(reason: RefreshReason) {
+        assert(reason.requestRoute == .relayout, "Invalid relayout reason: \(reason)")
         scheduleRefreshSession(reason.relayoutSchedulingPolicy, reason: reason)
     }
 
@@ -407,6 +411,7 @@ import QuartzCore
         reason: RefreshReason,
         postLayout: PostLayoutAction? = nil
     ) {
+        assert(reason.requestRoute == .immediateRelayout, "Invalid immediate-relayout reason: \(reason)")
         guard !layoutState.isInLightSession else { return }
         enqueueRefresh(.init(kind: .immediateRelayout, reason: reason, postLayout: postLayout))
     }
@@ -415,6 +420,7 @@ import QuartzCore
         reason: RefreshReason,
         postLayout: PostLayoutAction? = nil
     ) {
+        assert(reason.requestRoute == .visibilityRefresh, "Invalid visibility-refresh reason: \(reason)")
         guard !layoutState.isInLightSession else { return }
         enqueueRefresh(.init(kind: .visibilityRefresh, reason: reason, postLayout: postLayout))
     }
@@ -427,6 +433,7 @@ import QuartzCore
         shouldRecoverFocus: Bool,
         postLayout: PostLayoutAction? = nil
     ) {
+        assert(RefreshReason.windowDestroyed.requestRoute == .windowRemoval, "Invalid window-removal reason")
         guard !layoutState.isInLightSession else { return }
         enqueueRefresh(
             .init(
@@ -543,9 +550,8 @@ import QuartzCore
             return false
         }
 
-        controller.updateWorkspaceBar()
-        controller.niriLayoutHandler.updateTabbedColumnOverlays()
-        refreshFocusedBorderForVisibilityState(on: controller)
+        guard !Task.isCancelled else { return false }
+        performVisibilitySideEffects(on: controller)
 
         return true
     }
@@ -694,10 +700,7 @@ import QuartzCore
             return
         }
 
-        if controller.hiddenAppPIDs.contains(entry.handle.pid)
-            || controller.workspaceManager.layoutReason(for: entry.handle) != .standard
-            || controller.workspaceManager.isHiddenInCorner(entry.handle)
-        {
+        if !controller.isManagedWindowDisplayable(entry.handle) {
             controller.borderManager.hideBorder()
             return
         }
@@ -783,6 +786,12 @@ import QuartzCore
 
             _ = controller.workspaceManager.addWindow(ax, pid: pid, windowId: winId, to: wsForWindow)
             seenKeys.insert(.init(pid: pid, windowId: winId))
+        }
+        for entry in controller.workspaceManager.allEntries()
+        where controller.hiddenAppPIDs.contains(entry.handle.pid)
+            || controller.workspaceManager.layoutReason(for: entry.handle) == .macosHiddenApp
+        {
+            seenKeys.insert(.init(pid: entry.handle.pid, windowId: entry.windowId))
         }
         controller.workspaceManager.removeMissing(keys: seenKeys, requiredConsecutiveMisses: 2)
         controller.workspaceManager.garbageCollectUnusedWorkspaces(focusedWorkspaceId: focusedWorkspaceId)
@@ -939,9 +948,9 @@ import QuartzCore
     }
 
     private func absorbIntoActiveFullRescan(_ refresh: ScheduledRefresh) {
-        guard !refresh.postLayoutActions.isEmpty else { return }
         guard var activeRefresh = layoutState.activeRefresh else { return }
         activeRefresh.postLayoutActions.append(contentsOf: refresh.postLayoutActions)
+        mergeAbsorbedVisibility(into: &activeRefresh, from: refresh)
         layoutState.activeRefresh = activeRefresh
     }
 
@@ -955,14 +964,18 @@ import QuartzCore
         case (.fullRescan, .fullRescan):
             pendingRefresh.reason = refresh.reason
             pendingRefresh.postLayoutActions.append(contentsOf: refresh.postLayoutActions)
+            mergeAbsorbedVisibility(into: &pendingRefresh, from: refresh)
         case (.fullRescan, _):
             pendingRefresh.postLayoutActions.append(contentsOf: refresh.postLayoutActions)
+            mergeAbsorbedVisibility(into: &pendingRefresh, from: refresh)
         case (.visibilityRefresh, .fullRescan),
              (.visibilityRefresh, .windowRemoval),
              (.visibilityRefresh, .immediateRelayout),
              (.visibilityRefresh, .relayout):
             var upgradedRefresh = refresh
             upgradedRefresh.postLayoutActions.append(contentsOf: pendingRefresh.postLayoutActions)
+            mergeAbsorbedVisibility(into: &upgradedRefresh, from: pendingRefresh)
+            mergeAbsorbedVisibility(into: &upgradedRefresh, from: refresh)
             pendingRefresh = upgradedRefresh
         case (.visibilityRefresh, .visibilityRefresh):
             pendingRefresh.reason = refresh.reason
@@ -972,6 +985,8 @@ import QuartzCore
              (.relayout, .fullRescan):
             var upgradedRefresh = refresh
             upgradedRefresh.postLayoutActions.append(contentsOf: pendingRefresh.postLayoutActions)
+            mergeAbsorbedVisibility(into: &upgradedRefresh, from: pendingRefresh)
+            mergeAbsorbedVisibility(into: &upgradedRefresh, from: refresh)
             pendingRefresh = upgradedRefresh
         case (.windowRemoval, .windowRemoval):
             pendingRefresh.reason = refresh.reason
@@ -980,28 +995,37 @@ import QuartzCore
                 with: refresh.windowRemovalPayloads
             )
             pendingRefresh.postLayoutActions.append(contentsOf: refresh.postLayoutActions)
+            mergeAbsorbedVisibility(into: &pendingRefresh, from: refresh)
         case (.windowRemoval, .immediateRelayout):
             pendingRefresh.postLayoutActions.append(contentsOf: refresh.postLayoutActions)
             mergeFollowUp(into: &pendingRefresh, kind: .immediateRelayout, reason: refresh.reason)
+            mergeAbsorbedVisibility(into: &pendingRefresh, from: refresh)
         case (.windowRemoval, .relayout):
             pendingRefresh.postLayoutActions.append(contentsOf: refresh.postLayoutActions)
             mergeFollowUp(into: &pendingRefresh, kind: .relayout, reason: refresh.reason)
+            mergeAbsorbedVisibility(into: &pendingRefresh, from: refresh)
         case (.windowRemoval, .visibilityRefresh):
             pendingRefresh.postLayoutActions.append(contentsOf: refresh.postLayoutActions)
+            mergeAbsorbedVisibility(into: &pendingRefresh, from: refresh)
         case (.immediateRelayout, .windowRemoval):
             var upgradedRefresh = refresh
             upgradedRefresh.postLayoutActions.append(contentsOf: pendingRefresh.postLayoutActions)
             upgradedRefresh.followUpRefresh = pendingRefresh.followUpRefresh
             mergeFollowUp(into: &upgradedRefresh, kind: .immediateRelayout, reason: pendingRefresh.reason)
+            mergeAbsorbedVisibility(into: &upgradedRefresh, from: pendingRefresh)
+            mergeAbsorbedVisibility(into: &upgradedRefresh, from: refresh)
             pendingRefresh = upgradedRefresh
         case (.relayout, .windowRemoval):
             var upgradedRefresh = refresh
             upgradedRefresh.postLayoutActions.append(contentsOf: pendingRefresh.postLayoutActions)
             mergeFollowUp(into: &upgradedRefresh, kind: .relayout, reason: pendingRefresh.reason)
+            mergeAbsorbedVisibility(into: &upgradedRefresh, from: pendingRefresh)
+            mergeAbsorbedVisibility(into: &upgradedRefresh, from: refresh)
             pendingRefresh = upgradedRefresh
         case (.immediateRelayout, .visibilityRefresh),
              (.relayout, .visibilityRefresh):
             pendingRefresh.postLayoutActions.append(contentsOf: refresh.postLayoutActions)
+            mergeAbsorbedVisibility(into: &pendingRefresh, from: refresh)
         case (.immediateRelayout, .immediateRelayout),
              (.relayout, .relayout):
             pendingRefresh.reason = refresh.reason
@@ -1010,9 +1034,11 @@ import QuartzCore
                 pendingRefresh.followUpRefresh,
                 with: refresh.followUpRefresh
             )
+            mergeAbsorbedVisibility(into: &pendingRefresh, from: refresh)
         case (.immediateRelayout, .relayout):
             pendingRefresh.postLayoutActions.append(contentsOf: refresh.postLayoutActions)
             mergeFollowUp(into: &pendingRefresh, kind: .relayout, reason: refresh.reason)
+            mergeAbsorbedVisibility(into: &pendingRefresh, from: refresh)
         case (.relayout, .immediateRelayout):
             var upgradedRefresh = refresh
             upgradedRefresh.postLayoutActions.append(contentsOf: pendingRefresh.postLayoutActions)
@@ -1021,6 +1047,8 @@ import QuartzCore
                 with: refresh.followUpRefresh
             )
             mergeFollowUp(into: &upgradedRefresh, kind: .relayout, reason: pendingRefresh.reason)
+            mergeAbsorbedVisibility(into: &upgradedRefresh, from: pendingRefresh)
+            mergeAbsorbedVisibility(into: &upgradedRefresh, from: refresh)
             pendingRefresh = upgradedRefresh
         }
 
@@ -1077,6 +1105,16 @@ import QuartzCore
         layoutState.activeRefresh = nil
 
         if didComplete {
+            if completedRefresh.kind != .visibilityRefresh, completedRefresh.needsVisibilityReconciliation {
+                assert(
+                    completedRefresh.visibilityReason != nil,
+                    "Missing visibility reason for absorbed visibility reconciliation"
+                )
+                if let controller {
+                    performVisibilitySideEffects(on: controller)
+                }
+            }
+
             for postLayoutAction in completedRefresh.postLayoutActions {
                 postLayoutAction()
             }
@@ -1143,6 +1181,18 @@ import QuartzCore
         )
     }
 
+    private func mergeAbsorbedVisibility(into refresh: inout ScheduledRefresh, from incoming: ScheduledRefresh) {
+        switch incoming.kind {
+        case .visibilityRefresh:
+            refresh.needsVisibilityReconciliation = true
+            refresh.visibilityReason = incoming.reason
+        case .fullRescan, .windowRemoval, .immediateRelayout, .relayout:
+            guard incoming.needsVisibilityReconciliation else { return }
+            refresh.needsVisibilityReconciliation = true
+            refresh.visibilityReason = incoming.visibilityReason ?? refresh.visibilityReason
+        }
+    }
+
     private func mergeFollowUpRefresh(
         _ existing: FollowUpRefresh?,
         with incoming: FollowUpRefresh?
@@ -1181,12 +1231,19 @@ import QuartzCore
             }
         }
 
+        mergeAbsorbedVisibility(into: &pendingRefresh, from: refresh)
         pendingRefresh.followUpRefresh = mergeFollowUpRefresh(
             refresh.followUpRefresh,
             with: pendingRefresh.followUpRefresh
         )
 
         layoutState.pendingRefresh = pendingRefresh
+    }
+
+    private func performVisibilitySideEffects(on controller: WMController) {
+        controller.updateWorkspaceBar()
+        controller.niriLayoutHandler.updateTabbedColumnOverlays()
+        refreshFocusedBorderForVisibilityState(on: controller)
     }
 
     func backingScale(for monitor: Monitor) -> CGFloat {

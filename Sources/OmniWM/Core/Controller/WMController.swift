@@ -191,6 +191,17 @@ final class WMController {
         workspaceBarManager.update()
     }
 
+    func isManagedWindowDisplayable(_ handle: WindowHandle) -> Bool {
+        guard workspaceManager.entry(for: handle) != nil else { return false }
+        if hiddenAppPIDs.contains(handle.pid) {
+            return false
+        }
+        if workspaceManager.layoutReason(for: handle) != .standard {
+            return false
+        }
+        return !workspaceManager.isHiddenInCorner(handle)
+    }
+
     func updateWorkspaceBarSettings() {
         workspaceBarManager.updateSettings()
     }

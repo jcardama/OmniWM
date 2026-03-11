@@ -16,6 +16,7 @@ final class AXManager {
     private var appLaunchObserver: NSObjectProtocol?
     var onAppLaunched: ((NSRunningApplication) -> Void)?
     var onAppTerminated: ((pid_t) -> Void)?
+    var currentWindowsAsyncOverride: (@MainActor () async -> [(AXWindowRef, pid_t, Int)])?
 
     private var framesByPidBuffer: [pid_t: [(windowId: Int, frame: CGRect)]] = [:]
     private var lastAppliedFrames: [Int: CGRect] = [:]
@@ -132,6 +133,9 @@ final class AXManager {
 
     func currentWindowsAsync() async -> [(AXWindowRef, pid_t, Int)] {
         AppAXContext.garbageCollect()
+        if let currentWindowsAsyncOverride {
+            return await currentWindowsAsyncOverride()
+        }
 
         let visibleWindows = SkyLight.shared.queryAllVisibleWindows()
         let pidsWithWindows = Set(visibleWindows.map { $0.pid })

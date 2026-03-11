@@ -23,6 +23,14 @@ enum RelayoutSchedulingPolicy: Equatable, Sendable {
     }
 }
 
+enum RefreshRequestRoute: Equatable, Sendable {
+    case fullRescan
+    case relayout
+    case immediateRelayout
+    case visibilityRefresh
+    case windowRemoval
+}
+
 enum RefreshReason: String, Sendable {
     case startup
     case appLaunched
@@ -47,6 +55,39 @@ enum RefreshReason: String, Sendable {
     case appHidden
     case appUnhidden
     case overviewMutation
+
+    var requestRoute: RefreshRequestRoute {
+        switch self {
+        case .startup,
+             .appLaunched,
+             .unlock,
+             .activeSpaceChanged,
+             .monitorConfigurationChanged,
+             .appRulesChanged,
+             .workspaceConfigChanged,
+             .appTerminated:
+            .fullRescan
+        case .layoutConfigChanged,
+             .monitorSettingsChanged,
+             .gapsChanged,
+             .workspaceLayoutToggled,
+             .axWindowCreated,
+             .axWindowChanged:
+            .relayout
+        case .lightSessionCommit,
+             .workspaceTransition,
+             .appActivationTransition,
+             .layoutCommand,
+             .interactiveGesture,
+             .overviewMutation:
+            .immediateRelayout
+        case .appHidden,
+             .appUnhidden:
+            .visibilityRefresh
+        case .windowDestroyed:
+            .windowRemoval
+        }
+    }
 
     var relayoutSchedulingPolicy: RelayoutSchedulingPolicy {
         switch self {

@@ -41,13 +41,13 @@ final class AXEventHandler: CGSEventDelegate {
 
         case let .moved(windowId):
             handleWindowMoveOrResize(windowId: windowId)
-            if !isWindowHidden(windowId: windowId) {
+            if isWindowDisplayable(windowId: windowId) {
                 controller.layoutRefreshController.requestRelayout(reason: .axWindowChanged)
             }
 
         case let .resized(windowId):
             handleWindowMoveOrResize(windowId: windowId)
-            if !isWindowHidden(windowId: windowId) {
+            if isWindowDisplayable(windowId: windowId) {
                 controller.layoutRefreshController.requestRelayout(reason: .axWindowChanged)
             }
 
@@ -59,12 +59,12 @@ final class AXEventHandler: CGSEventDelegate {
         }
     }
 
-    private func isWindowHidden(windowId: UInt32) -> Bool {
+    private func isWindowDisplayable(windowId: UInt32) -> Bool {
         guard let controller else { return false }
         guard let entry = controller.workspaceManager.entry(forWindowId: Int(windowId)) else {
             return false
         }
-        return controller.workspaceManager.isHiddenInCorner(entry.handle)
+        return controller.isManagedWindowDisplayable(entry.handle)
     }
 
     private func handleCGSWindowCreated(windowId: UInt32) {

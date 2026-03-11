@@ -55,6 +55,24 @@ private func waitForRefreshWork(on controller: WMController) async {
 }
 
 @MainActor
+private func lastAppliedBorderWindowId(on controller: WMController) -> Int? {
+    guard let value = Mirror(reflecting: controller.borderManager)
+        .children
+        .first(where: { $0.label == "lastAppliedWindowId" })?
+        .value
+    else {
+        return nil
+    }
+
+    let optionalMirror = Mirror(reflecting: value)
+    if optionalMirror.displayStyle == .optional {
+        return optionalMirror.children.first?.value as? Int
+    }
+
+    return value as? Int
+}
+
+@MainActor
 private final class RefreshEventRecorder {
     var relayoutEvents: [(RefreshReason, LayoutRefreshController.RefreshRoute)] = []
     var visibilityReasons: [RefreshReason] = []
@@ -178,6 +196,19 @@ private func addWindow(
 }
 
 @MainActor
+private func primeFocusedBorder(on controller: WMController, handle: WindowHandle) {
+    guard let entry = controller.workspaceManager.entry(for: handle) else {
+        fatalError("Missing entry for focused-border priming")
+    }
+
+    controller.setBordersEnabled(true)
+    controller.borderManager.updateFocusedWindow(
+        frame: CGRect(x: 10, y: 10, width: 800, height: 600),
+        windowId: entry.windowId
+    )
+}
+
+@MainActor
 private func makeTwoMonitorRefreshTestController() -> (
     controller: WMController,
     primaryMonitor: Monitor,
@@ -277,8 +308,15 @@ private func prepareNiriState(
         ))
         #expect(RefreshReason.gapsChanged.relayoutSchedulingPolicy == .plain)
         #expect(RefreshReason.workspaceTransition.relayoutSchedulingPolicy == .plain)
-        #expect(RefreshReason.appHidden.relayoutSchedulingPolicy == .plain)
-        #expect(RefreshReason.windowDestroyed.relayoutSchedulingPolicy == .plain)
+    }
+
+    @Test func refreshRoutesAreExplicit() {
+        #expect(RefreshReason.appLaunched.requestRoute == .fullRescan)
+        #expect(RefreshReason.gapsChanged.requestRoute == .relayout)
+        #expect(RefreshReason.workspaceTransition.requestRoute == .immediateRelayout)
+        #expect(RefreshReason.appHidden.requestRoute == .visibilityRefresh)
+        #expect(RefreshReason.appUnhidden.requestRoute == .visibilityRefresh)
+        #expect(RefreshReason.windowDestroyed.requestRoute == .windowRemoval)
     }
 
     @Test @MainActor func runLightSessionUsesImmediateRelayoutOnly() async {
@@ -647,6 +685,39 @@ private func prepareNiriState(
         #expect(controller.layoutRefreshController.debugCounters.immediateRelayoutExecutions == 0)
         #expect(fullRescanReasons == [.startup])
         #expect(postLayoutRuns == 1)
+    }
+
+    @Test @MainActor func hiddenAppsSurviveVisibleOnlyFullRescansAndRestoreOnUnhide() async {
+        let controller = makeRefreshTestController()
+        controller.axManager.currentWindowsAsyncOverride = { [] }
+        controller.axEventHandler.windowSubscriptionHandler = { _ in }
+        guard let workspaceId = controller.activeWorkspace()?.id else {
+            Issue.record("Missing active workspace")
+            return
+        }
+
+        let pid = getpid()
+        let windowId = 306
+        let handle = addWindow(on: controller, workspaceId: workspaceId, pid: pid, windowId: windowId)
+
+        controller.axEventHandler.handleAppHidden(pid: pid)
+        await waitForRefreshWork(on: controller)
+
+        controller.layoutRefreshController.requestFullRescan(reason: .startup)
+        await waitForRefreshWork(on: controller)
+        #expect(controller.workspaceManager.entry(for: handle) != nil)
+        #expect(controller.workspaceManager.entry(forPid: pid, windowId: windowId)?.workspaceId == workspaceId)
+
+        controller.layoutRefreshController.requestFullRescan(reason: .startup)
+        await waitForRefreshWork(on: controller)
+        #expect(controller.workspaceManager.entry(for: handle) != nil)
+        #expect(controller.workspaceManager.layoutReason(for: handle) == .macosHiddenApp)
+
+        controller.axEventHandler.handleAppUnhidden(pid: pid)
+        await waitForRefreshWork(on: controller)
+
+        #expect(controller.workspaceManager.entry(for: handle) != nil)
+        #expect(controller.workspaceManager.layoutReason(for: handle) == .standard)
     }
 
     @Test @MainActor func immediateRelayoutSupersedesPendingDebouncedRelayout() async {
@@ -1065,6 +1136,126 @@ private func prepareNiriState(
         #expect(recorder.fullRescanReasons == [.startup])
         #expect(recorder.visibilityReasons.isEmpty)
         #expect(controller.layoutRefreshController.debugCounters.visibilityExecutions == 0)
+    }
+
+    @Test @MainActor func activeFullRescanAbsorbsVisibilityReconciliation() async {
+        let controller = makeRefreshTestController()
+        let gate = AsyncGate()
+        guard let workspaceId = controller.activeWorkspace()?.id else {
+            Issue.record("Missing active workspace")
+            return
+        }
+
+        let pid = getpid()
+        let handle = addFocusedWindow(on: controller, workspaceId: workspaceId, windowId: 307)
+        primeFocusedBorder(on: controller, handle: handle)
+        #expect(lastAppliedBorderWindowId(on: controller) == 307)
+
+        let recorder = RefreshEventRecorder()
+        installRefreshSpies(on: controller, recorder: recorder)
+        controller.layoutRefreshController.debugHooks.onFullRescan = { reason in
+            recorder.fullRescanReasons.append(reason)
+            await gate.wait()
+            return true
+        }
+
+        controller.layoutRefreshController.requestFullRescan(reason: .startup)
+        await waitUntil { recorder.fullRescanReasons == [.startup] }
+        controller.axEventHandler.handleAppHidden(pid: pid)
+
+        gate.open()
+        await waitForRefreshWork(on: controller)
+
+        #expect(recorder.fullRescanReasons == [.startup])
+        #expect(recorder.visibilityReasons.isEmpty)
+        #expect(controller.layoutRefreshController.debugCounters.visibilityExecutions == 0)
+        #expect(lastAppliedBorderWindowId(on: controller) == nil)
+    }
+
+    @Test @MainActor func pendingRelayoutAbsorbsVisibilityReconciliation() async {
+        let controller = makeRefreshTestController()
+        let gate = AsyncGate()
+        guard let workspaceId = controller.activeWorkspace()?.id else {
+            Issue.record("Missing active workspace")
+            return
+        }
+
+        let pid = getpid()
+        let handle = addFocusedWindow(on: controller, workspaceId: workspaceId, windowId: 308)
+        primeFocusedBorder(on: controller, handle: handle)
+        #expect(lastAppliedBorderWindowId(on: controller) == 308)
+
+        let recorder = RefreshEventRecorder()
+        installRefreshSpies(on: controller, recorder: recorder)
+        controller.layoutRefreshController.debugHooks.onRelayout = { reason, route in
+            recorder.relayoutEvents.append((reason, route))
+            if route == .immediateRelayout {
+                await gate.wait()
+            }
+            return true
+        }
+
+        controller.layoutRefreshController.requestImmediateRelayout(reason: .workspaceTransition)
+        await waitUntil { recorder.relayoutEvents.count == 1 }
+        controller.layoutRefreshController.requestRelayout(reason: .gapsChanged)
+        controller.axEventHandler.handleAppHidden(pid: pid)
+
+        gate.open()
+        await waitForRefreshWork(on: controller)
+
+        #expect(recorder.relayoutEvents.map(\.0) == [.workspaceTransition, .gapsChanged])
+        #expect(recorder.relayoutEvents.map(\.1) == [.immediateRelayout, .relayout])
+        #expect(recorder.visibilityReasons.isEmpty)
+        #expect(controller.layoutRefreshController.debugCounters.visibilityExecutions == 0)
+        #expect(lastAppliedBorderWindowId(on: controller) == nil)
+    }
+
+    @Test @MainActor func pendingWindowRemovalAbsorbsVisibilityReconciliation() async {
+        let controller = makeRefreshTestController()
+        let gate = AsyncGate()
+        guard let workspaceId = controller.activeWorkspace()?.id else {
+            Issue.record("Missing active workspace")
+            return
+        }
+
+        let pid = getpid()
+        let handle = addFocusedWindow(on: controller, workspaceId: workspaceId, windowId: 309)
+        primeFocusedBorder(on: controller, handle: handle)
+        #expect(lastAppliedBorderWindowId(on: controller) == 309)
+
+        let recorder = RefreshEventRecorder()
+        installRefreshSpies(on: controller, recorder: recorder)
+        controller.layoutRefreshController.debugHooks.onRelayout = { reason, route in
+            recorder.relayoutEvents.append((reason, route))
+            if route == .immediateRelayout {
+                await gate.wait()
+            }
+            return true
+        }
+        controller.layoutRefreshController.debugHooks.onWindowRemoval = { reason, _ in
+            recorder.windowRemovalReasons.append(reason)
+            return true
+        }
+
+        controller.layoutRefreshController.requestImmediateRelayout(reason: .workspaceTransition)
+        await waitUntil { recorder.relayoutEvents.count == 1 }
+        controller.layoutRefreshController.requestWindowRemoval(
+            workspaceId: workspaceId,
+            layoutType: .dwindle,
+            removedNodeId: nil,
+            niriOldFrames: [:],
+            shouldRecoverFocus: false
+        )
+        controller.axEventHandler.handleAppHidden(pid: pid)
+
+        gate.open()
+        await waitForRefreshWork(on: controller)
+
+        #expect(recorder.relayoutEvents.map(\.0) == [.workspaceTransition])
+        #expect(recorder.windowRemovalReasons == [.windowDestroyed])
+        #expect(recorder.visibilityReasons.isEmpty)
+        #expect(controller.layoutRefreshController.debugCounters.visibilityExecutions == 0)
+        #expect(lastAppliedBorderWindowId(on: controller) == nil)
     }
 
     @Test @MainActor func visibilityQueuedBehindActiveImmediateRelayoutStillExecutes() async {
