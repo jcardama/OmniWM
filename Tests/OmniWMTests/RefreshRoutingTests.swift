@@ -148,6 +148,21 @@ private func addFocusedWindow(
 }
 
 @MainActor
+private func addWindow(
+    on controller: WMController,
+    workspaceId: WorkspaceDescriptor.ID,
+    pid: pid_t,
+    windowId: Int
+) -> WindowHandle {
+    controller.workspaceManager.addWindow(
+        makeRefreshTestWindow(windowId: windowId),
+        pid: pid,
+        windowId: windowId,
+        to: workspaceId
+    )
+}
+
+@MainActor
 private func makeTwoMonitorRefreshTestController() -> (
     controller: WMController,
     primaryMonitor: Monitor,
@@ -781,12 +796,6 @@ private func prepareNiriState(
         #expect(recorder.relayoutEvents.isEmpty)
 
         recorder.fullRescanReasons.removeAll()
-        lifecycleManager.handleUnknownWindowDestroyed()
-        await waitForRefreshWork(on: controller)
-        #expect(recorder.fullRescanReasons == [.unknownWindowDestroyed])
-        #expect(recorder.relayoutEvents.isEmpty)
-
-        recorder.fullRescanReasons.removeAll()
         let otherMonitor = makeRefreshTestMonitor(displayId: 2, name: "Secondary", x: 1920)
         lifecycleManager.applyMonitorConfigurationChanged(
             currentMonitors: [otherMonitor],
@@ -814,5 +823,65 @@ private func prepareNiriState(
         #expect(recorder.fullRescanReasons == [.appTerminated])
         #expect(recorder.relayoutEvents.isEmpty)
         assertNoLegacyReasons(recorder)
+    }
+
+    @Test func destroyNotificationRefconRoundTripsWindowId() {
+        let windowId = 6202
+        let refcon = AppAXContext.destroyNotificationRefcon(for: windowId)
+
+        #expect(refcon != nil)
+        #expect(AppAXContext.destroyNotificationWindowId(from: refcon) == windowId)
+        #expect(AppAXContext.destroyNotificationWindowId(from: nil) == nil)
+    }
+
+    @Test @MainActor func destroyCallbackDispatchesEncodedWindowId() async {
+        let pid = getpid()
+        let windowId = 6302
+        var delivered: (pid_t, Int)?
+
+        AppAXContext.handleWindowDestroyedCallback(
+            pid: pid,
+            refcon: AppAXContext.destroyNotificationRefcon(for: windowId),
+            handler: { callbackPid, callbackWindowId in
+                delivered = (callbackPid, callbackWindowId)
+            }
+        )
+        await waitUntil { delivered != nil }
+
+        #expect(delivered?.0 == pid)
+        #expect(delivered?.1 == windowId)
+    }
+
+    @Test @MainActor func exactDestroyCallbackRemovesClosedWindowWithoutFullRescan() async {
+        let controller = makeRefreshTestController()
+        let recorder = RefreshEventRecorder()
+        installRefreshSpies(on: controller, recorder: recorder)
+        guard let workspaceId = controller.activeWorkspace()?.id else {
+            Issue.record("Missing active workspace")
+            return
+        }
+
+        let pid = getpid()
+        let survivorWindowId = 6401
+        let removedWindowId = 6402
+        _ = addWindow(on: controller, workspaceId: workspaceId, pid: pid, windowId: survivorWindowId)
+        _ = addWindow(on: controller, workspaceId: workspaceId, pid: pid, windowId: removedWindowId)
+
+        AppAXContext.handleWindowDestroyedCallback(
+            pid: pid,
+            refcon: AppAXContext.destroyNotificationRefcon(for: removedWindowId),
+            handler: { [weak controller] callbackPid, callbackWindowId in
+                controller?.axEventHandler.handleRemoved(pid: callbackPid, winId: callbackWindowId)
+            }
+        )
+        await waitUntil {
+            controller.workspaceManager.entry(forPid: pid, windowId: removedWindowId) == nil
+        }
+
+        #expect(controller.workspaceManager.entry(forPid: pid, windowId: survivorWindowId) != nil)
+        #expect(controller.workspaceManager.entry(forPid: pid, windowId: removedWindowId) == nil)
+        #expect(controller.workspaceManager.entries(in: workspaceId).map(\.windowId) == [survivorWindowId])
+        #expect(recorder.fullRescanReasons.isEmpty)
+        #expect(recorder.relayoutEvents.isEmpty)
     }
 }

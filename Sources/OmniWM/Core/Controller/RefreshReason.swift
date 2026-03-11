@@ -29,7 +29,6 @@ enum RefreshReason: String, Sendable {
     case unlock
     case activeSpaceChanged
     case monitorConfigurationChanged
-    case unknownWindowDestroyed
     case appRulesChanged
     case workspaceConfigChanged
     case lightSessionCommit
@@ -55,7 +54,6 @@ enum RefreshReason: String, Sendable {
              .unlock,
              .activeSpaceChanged,
              .monitorConfigurationChanged,
-             .unknownWindowDestroyed,
              .appRulesChanged,
              .workspaceConfigChanged,
              .lightSessionCommit,

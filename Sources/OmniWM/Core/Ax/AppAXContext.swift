@@ -31,7 +31,6 @@ final class AppAXContext {
     private let subscribedWindowIds: ThreadGuardedValue<Set<Int>>
 
     @MainActor static var onWindowDestroyed: ((pid_t, Int) -> Void)?
-    @MainActor static var onWindowDestroyedUnknown: (() -> Void)?
     @MainActor static var onFocusedWindowChanged: ((pid_t) -> Void)?
 
     @MainActor static var contexts: [pid_t: AppAXContext] = [:]
@@ -157,6 +156,39 @@ final class AppAXContext {
         }
     }
 
+    nonisolated static func destroyNotificationRefcon(for windowId: Int) -> UnsafeMutableRawPointer? {
+        guard windowId > 0 else { return nil }
+        return UnsafeMutableRawPointer(bitPattern: windowId)
+    }
+
+    nonisolated static func destroyNotificationWindowId(
+        from refcon: UnsafeMutableRawPointer?
+    ) -> Int? {
+        guard let refcon else { return nil }
+        let windowId = Int(bitPattern: refcon)
+        guard windowId > 0 else { return nil }
+        return windowId
+    }
+
+    nonisolated static func handleWindowDestroyedCallback(
+        pid: pid_t,
+        refcon: UnsafeMutableRawPointer?,
+        handler: (@MainActor @Sendable (pid_t, Int) -> Void)? = nil
+    ) {
+        guard let windowId = destroyNotificationWindowId(from: refcon) else {
+            assertionFailure("Received AX destroy callback without a valid windowId refcon")
+            return
+        }
+
+        Task { @MainActor in
+            if let handler {
+                handler(pid, windowId)
+            } else {
+                AppAXContext.onWindowDestroyed?(pid, windowId)
+            }
+        }
+    }
+
     func getWindowsAsync() async throws -> [(AXWindowRef, Int)] {
         guard let thread else { return [] }
         nonisolated(unsafe) let appThread = thread
@@ -220,11 +252,14 @@ final class AppAXContext {
                 results.append((axRef, windowId))
 
                 if !subscribedWindowIds.contains(windowId), let obs = axObserver.value {
+                    guard let destroyRefcon = AppAXContext.destroyNotificationRefcon(for: windowId) else {
+                        continue
+                    }
                     let subResult = AXObserverAddNotification(
                         obs,
                         element,
                         kAXUIElementDestroyedNotification as CFString,
-                        nil
+                        destroyRefcon
                     )
                     if subResult == .success {
                         subscribedWindowIds.insert(windowId)
@@ -354,24 +389,14 @@ private func axWindowDestroyedCallback(
     _: AXObserver,
     _ element: AXUIElement,
     _ notification: CFString,
-    _: UnsafeMutableRawPointer?
+    _ refcon: UnsafeMutableRawPointer?
 ) {
     guard (notification as String) == (kAXUIElementDestroyedNotification as String) else { return }
 
     var pid: pid_t = 0
     guard AXUIElementGetPid(element, &pid) == .success else { return }
 
-    var windowIdRaw: CGWindowID = 0
-    _ = _AXUIElementGetWindow(element, &windowIdRaw)
-    let windowId = Int(windowIdRaw)
-
-    Task { @MainActor in
-        if windowId != 0 {
-            AppAXContext.onWindowDestroyed?(pid, windowId)
-        } else {
-            AppAXContext.onWindowDestroyedUnknown?()
-        }
-    }
+    AppAXContext.handleWindowDestroyedCallback(pid: pid, refcon: refcon)
 }
 
 private func axFocusedWindowChangedCallback(

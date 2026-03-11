@@ -56,9 +56,6 @@ final class ServiceLifecycleManager {
             guard let controller else { return }
             controller.axEventHandler.handleRemoved(pid: pid, winId: windowId)
         }
-        AppAXContext.onWindowDestroyedUnknown = { [weak self] in
-            self?.handleUnknownWindowDestroyed()
-        }
         AppAXContext.onFocusedWindowChanged = { [weak controller] pid in
             controller?.axEventHandler.handleAppActivation(pid: pid)
         }
@@ -202,10 +199,6 @@ final class ServiceLifecycleManager {
 
     func handleAppLaunched() {
         controller?.layoutRefreshController.requestFullRescan(reason: .appLaunched)
-    }
-
-    func handleUnknownWindowDestroyed() {
-        controller?.layoutRefreshController.requestFullRescan(reason: .unknownWindowDestroyed)
     }
 
     func handleUnlockDetected() {
@@ -357,7 +350,6 @@ final class ServiceLifecycleManager {
         controller.hasStartedServices = false
 
         AppAXContext.onWindowDestroyed = nil
-        AppAXContext.onWindowDestroyedUnknown = nil
         AppAXContext.onFocusedWindowChanged = nil
         controller.axManager.onAppLaunched = nil
         controller.axManager.onAppTerminated = nil
