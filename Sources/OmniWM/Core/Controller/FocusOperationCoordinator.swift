@@ -3,47 +3,47 @@ import Foundation
 @MainActor
 final class FocusOperationCoordinator {
     // Transient sequencing only. Durable focus/session ownership lives in WorkspaceManager.
-    private var pendingFocusHandle: WindowHandle?
-    private var deferredFocusHandle: WindowHandle?
+    private var pendingFocusToken: WindowToken?
+    private var deferredFocusToken: WindowToken?
     private var isFocusOperationPending = false
     private var lastFocusTime: Date = .distantPast
 
-    func discardPendingFocus(_ handle: WindowHandle) {
-        if pendingFocusHandle?.id == handle.id {
-            pendingFocusHandle = nil
+    func discardPendingFocus(_ token: WindowToken) {
+        if pendingFocusToken == token {
+            pendingFocusToken = nil
         }
-        if deferredFocusHandle?.id == handle.id {
-            deferredFocusHandle = nil
+        if deferredFocusToken == token {
+            deferredFocusToken = nil
         }
     }
 
     func focusWindow(
-        _ handle: WindowHandle,
+        _ token: WindowToken,
         performFocus: () -> Void,
-        onDeferredFocus: @escaping (WindowHandle) -> Void
+        onDeferredFocus: @escaping (WindowToken) -> Void
     ) {
         let now = Date()
 
-        if pendingFocusHandle == handle {
+        if pendingFocusToken == token {
             if now.timeIntervalSince(lastFocusTime) < 0.016 {
                 return
             }
         }
 
         if isFocusOperationPending {
-            deferredFocusHandle = handle
+            deferredFocusToken = token
             return
         }
 
         isFocusOperationPending = true
-        pendingFocusHandle = handle
+        pendingFocusToken = token
         lastFocusTime = now
 
         performFocus()
 
         isFocusOperationPending = false
-        if let deferred = deferredFocusHandle, deferred != handle {
-            deferredFocusHandle = nil
+        if let deferred = deferredFocusToken, deferred != token {
+            deferredFocusToken = nil
             onDeferredFocus(deferred)
         }
     }

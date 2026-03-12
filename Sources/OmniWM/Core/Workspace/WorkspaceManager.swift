@@ -28,14 +28,14 @@ final class WorkspaceManager {
 
         struct FocusSession {
             struct PendingManagedFocusRequest {
-                var handle: WindowHandle?
+                var token: WindowToken?
                 var workspaceId: WorkspaceDescriptor.ID?
                 var monitorId: Monitor.ID?
             }
 
-            var focusedHandle: WindowHandle?
+            var focusedToken: WindowToken?
             var pendingManagedFocus = PendingManagedFocusRequest()
-            var lastFocusedByWorkspace: [WorkspaceDescriptor.ID: WindowHandle] = [:]
+            var lastFocusedByWorkspace: [WorkspaceDescriptor.ID: WindowToken] = [:]
             var isNonManagedFocusActive: Bool = false
             var isAppFullscreenActive: Bool = false
         }
@@ -99,12 +99,20 @@ final class WorkspaceManager {
         sessionState.previousInteractionMonitorId
     }
 
+    var focusedToken: WindowToken? {
+        sessionState.focus.focusedToken
+    }
+
     var focusedHandle: WindowHandle? {
-        sessionState.focus.focusedHandle
+        focusedToken.flatMap { windows.handle(for: $0) }
+    }
+
+    var pendingFocusedToken: WindowToken? {
+        sessionState.focus.pendingManagedFocus.token
     }
 
     var pendingFocusedHandle: WindowHandle? {
-        sessionState.focus.pendingManagedFocus.handle
+        pendingFocusedToken.flatMap { windows.handle(for: $0) }
     }
 
     var pendingFocusedWorkspaceId: WorkspaceDescriptor.ID? {
@@ -131,7 +139,7 @@ final class WorkspaceManager {
 
     @discardableResult
     func setManagedFocus(
-        _ handle: WindowHandle,
+        _ token: WindowToken,
         in workspaceId: WorkspaceDescriptor.ID,
         onMonitor monitorId: Monitor.ID? = nil
     ) -> Bool {
@@ -143,13 +151,13 @@ final class WorkspaceManager {
         changed = updateFocusSession(notify: false) { focus in
             let appFullscreen = focus.isNonManagedFocusActive ? false : focus.isAppFullscreenActive
             var changed = self.applyConfirmedManagedFocus(
-                handle,
+                token,
                 in: workspaceId,
                 appFullscreen: appFullscreen,
                 focus: &focus
             )
             changed = self.clearPendingManagedFocusRequest(
-                matching: handle,
+                matching: token,
                 workspaceId: workspaceId,
                 focus: &focus
             ) || changed
@@ -163,15 +171,15 @@ final class WorkspaceManager {
 
     @discardableResult
     func beginManagedFocusRequest(
-        _ handle: WindowHandle,
+        _ token: WindowToken,
         in workspaceId: WorkspaceDescriptor.ID,
         onMonitor monitorId: Monitor.ID? = nil
     ) -> Bool {
         let normalizedMonitorId = monitorId.flatMap { self.monitor(byId: $0)?.id }
-        var changed = rememberFocus(handle, in: workspaceId)
+        var changed = rememberFocus(token, in: workspaceId)
         changed = updateFocusSession(notify: true) { focus in
             self.updatePendingManagedFocusRequest(
-                handle,
+                token,
                 workspaceId: workspaceId,
                 monitorId: normalizedMonitorId,
                 focus: &focus
@@ -182,7 +190,7 @@ final class WorkspaceManager {
 
     @discardableResult
     func confirmManagedFocus(
-        _ handle: WindowHandle,
+        _ token: WindowToken,
         in workspaceId: WorkspaceDescriptor.ID,
         onMonitor monitorId: Monitor.ID? = nil,
         appFullscreen: Bool,
@@ -210,7 +218,7 @@ final class WorkspaceManager {
 
         changed = updateFocusSession(notify: false) { focus in
             var focusChanged = self.applyConfirmedManagedFocus(
-                handle,
+                token,
                 in: workspaceId,
                 appFullscreen: appFullscreen,
                 focus: &focus
@@ -245,25 +253,25 @@ final class WorkspaceManager {
     }
 
     @discardableResult
-    func rememberFocus(_ handle: WindowHandle, in workspaceId: WorkspaceDescriptor.ID) -> Bool {
-        guard sessionState.focus.lastFocusedByWorkspace[workspaceId] != handle else { return false }
-        sessionState.focus.lastFocusedByWorkspace[workspaceId] = handle
+    func rememberFocus(_ token: WindowToken, in workspaceId: WorkspaceDescriptor.ID) -> Bool {
+        guard sessionState.focus.lastFocusedByWorkspace[workspaceId] != token else { return false }
+        sessionState.focus.lastFocusedByWorkspace[workspaceId] = token
         return true
     }
 
     @discardableResult
     func syncWorkspaceFocus(
-        _ handle: WindowHandle,
+        _ token: WindowToken,
         in workspaceId: WorkspaceDescriptor.ID,
         onMonitor _: Monitor.ID? = nil
     ) -> Bool {
-        rememberFocus(handle, in: workspaceId)
+        rememberFocus(token, in: workspaceId)
     }
 
     @discardableResult
     func syncWorkspaceSelection(
         nodeId: NodeId?,
-        focusedHandle: WindowHandle?,
+        focusedToken: WindowToken?,
         in workspaceId: WorkspaceDescriptor.ID,
         onMonitor monitorId: Monitor.ID? = nil
     ) -> Bool {
@@ -277,9 +285,9 @@ final class WorkspaceManager {
             }
         }
 
-        if let focusedHandle {
+        if let focusedToken {
             changed = syncWorkspaceFocus(
-                focusedHandle,
+                focusedToken,
                 in: workspaceId,
                 onMonitor: monitorId
             ) || changed
@@ -291,36 +299,36 @@ final class WorkspaceManager {
     func applyNiriViewportTransfer(
         sourceWorkspaceId: WorkspaceDescriptor.ID?,
         sourceState: ViewportState?,
-        sourceFocusedHandle: WindowHandle?,
+        sourceFocusedToken: WindowToken?,
         targetWorkspaceId: WorkspaceDescriptor.ID?,
         targetState: ViewportState?,
-        targetFocusedHandle: WindowHandle?
+        targetFocusedToken: WindowToken?
     ) {
         if let sourceWorkspaceId, let sourceState {
             updateNiriViewportState(sourceState, for: sourceWorkspaceId)
-            if let sourceFocusedHandle {
-                _ = rememberFocus(sourceFocusedHandle, in: sourceWorkspaceId)
+            if let sourceFocusedToken {
+                _ = rememberFocus(sourceFocusedToken, in: sourceWorkspaceId)
             }
         }
 
         if let targetWorkspaceId, let targetState {
             updateNiriViewportState(targetState, for: targetWorkspaceId)
-            if let targetFocusedHandle {
-                _ = rememberFocus(targetFocusedHandle, in: targetWorkspaceId)
+            if let targetFocusedToken {
+                _ = rememberFocus(targetFocusedToken, in: targetWorkspaceId)
             }
         }
     }
 
-    func lastFocusedHandle(in workspaceId: WorkspaceDescriptor.ID) -> WindowHandle? {
+    func lastFocusedToken(in workspaceId: WorkspaceDescriptor.ID) -> WindowToken? {
         sessionState.focus.lastFocusedByWorkspace[workspaceId]
     }
 
-    func preferredFocusHandle(in workspaceId: WorkspaceDescriptor.ID) -> WindowHandle? {
-        if let pendingHandle = sessionState.focus.pendingManagedFocus.handle,
+    func preferredFocusToken(in workspaceId: WorkspaceDescriptor.ID) -> WindowToken? {
+        if let pendingToken = sessionState.focus.pendingManagedFocus.token,
            sessionState.focus.pendingManagedFocus.workspaceId == workspaceId,
-           entry(for: pendingHandle)?.workspaceId == workspaceId
+           entry(for: pendingToken)?.workspaceId == workspaceId
         {
-            return pendingHandle
+            return pendingToken
         }
 
         if let remembered = sessionState.focus.lastFocusedByWorkspace[workspaceId],
@@ -329,32 +337,32 @@ final class WorkspaceManager {
             return remembered
         }
 
-        if let confirmed = sessionState.focus.focusedHandle,
+        if let confirmed = sessionState.focus.focusedToken,
            entry(for: confirmed)?.workspaceId == workspaceId
         {
             return confirmed
         }
 
-        return entries(in: workspaceId).first?.handle
+        return entries(in: workspaceId).first?.token
     }
 
-    func resolveWorkspaceFocus(in workspaceId: WorkspaceDescriptor.ID) -> WindowHandle? {
+    func resolveWorkspaceFocusToken(in workspaceId: WorkspaceDescriptor.ID) -> WindowToken? {
         if let remembered = sessionState.focus.lastFocusedByWorkspace[workspaceId],
            entry(for: remembered)?.workspaceId == workspaceId
         {
             return remembered
         }
-        return entries(in: workspaceId).first?.handle
+        return entries(in: workspaceId).first?.token
     }
 
     @discardableResult
-    func resolveAndSetWorkspaceFocus(
+    func resolveAndSetWorkspaceFocusToken(
         in workspaceId: WorkspaceDescriptor.ID,
         onMonitor _: Monitor.ID? = nil
-    ) -> WindowHandle? {
-        if let handle = resolveWorkspaceFocus(in: workspaceId) {
-            _ = rememberFocus(handle, in: workspaceId)
-            return handle
+    ) -> WindowToken? {
+        if let token = resolveWorkspaceFocusToken(in: workspaceId) {
+            _ = rememberFocus(token, in: workspaceId)
+            return token
         }
 
         _ = updateFocusSession(notify: true) { focus in
@@ -364,10 +372,10 @@ final class WorkspaceManager {
                 focus: &focus
             )
 
-            if let confirmed = focus.focusedHandle,
+            if let confirmed = focus.focusedToken,
                self.entry(for: confirmed)?.workspaceId == workspaceId
             {
-                focus.focusedHandle = nil
+                focus.focusedToken = nil
                 focus.isAppFullscreenActive = false
                 focusChanged = true
             }
@@ -383,8 +391,8 @@ final class WorkspaceManager {
         updateFocusSession(notify: true) { focus in
             var changed = false
 
-            if focus.focusedHandle != nil {
-                focus.focusedHandle = nil
+            if focus.focusedToken != nil {
+                focus.focusedToken = nil
                 changed = true
             }
             changed = self.clearPendingManagedFocusRequest(matching: nil, workspaceId: nil, focus: &focus) || changed
@@ -401,24 +409,24 @@ final class WorkspaceManager {
         }
     }
 
-    func handleWindowRemoved(_ handle: WindowHandle, in workspaceId: WorkspaceDescriptor.ID?) {
+    func handleWindowRemoved(_ token: WindowToken, in workspaceId: WorkspaceDescriptor.ID?) {
         _ = updateFocusSession(notify: true) { focus in
             var focusChanged = false
 
-            if focus.focusedHandle?.id == handle.id {
-                focus.focusedHandle = nil
+            if focus.focusedToken == token {
+                focus.focusedToken = nil
                 focus.isAppFullscreenActive = false
                 focusChanged = true
             }
 
             focusChanged = self.clearPendingManagedFocusRequest(
-                matching: handle,
+                matching: token,
                 workspaceId: workspaceId,
                 focus: &focus
             ) || focusChanged
 
             if let workspaceId,
-               focus.lastFocusedByWorkspace[workspaceId]?.id == handle.id
+               focus.lastFocusedByWorkspace[workspaceId] == token
             {
                 focus.lastFocusedByWorkspace[workspaceId] = nil
             }
@@ -440,19 +448,19 @@ final class WorkspaceManager {
     }
 
     private func applyConfirmedManagedFocus(
-        _ handle: WindowHandle,
+        _ token: WindowToken,
         in workspaceId: WorkspaceDescriptor.ID,
         appFullscreen: Bool,
         focus: inout SessionState.FocusSession
     ) -> Bool {
         var changed = false
 
-        if focus.focusedHandle != handle {
-            focus.focusedHandle = handle
+        if focus.focusedToken != token {
+            focus.focusedToken = token
             changed = true
         }
-        if focus.lastFocusedByWorkspace[workspaceId] != handle {
-            focus.lastFocusedByWorkspace[workspaceId] = handle
+        if focus.lastFocusedByWorkspace[workspaceId] != token {
+            focus.lastFocusedByWorkspace[workspaceId] = token
             changed = true
         }
         if focus.isNonManagedFocusActive {
@@ -468,15 +476,15 @@ final class WorkspaceManager {
     }
 
     private func updatePendingManagedFocusRequest(
-        _ handle: WindowHandle,
+        _ token: WindowToken,
         workspaceId: WorkspaceDescriptor.ID,
         monitorId: Monitor.ID?,
         focus: inout SessionState.FocusSession
     ) -> Bool {
         var changed = false
 
-        if focus.pendingManagedFocus.handle != handle {
-            focus.pendingManagedFocus.handle = handle
+        if focus.pendingManagedFocus.token != token {
+            focus.pendingManagedFocus.token = token
             changed = true
         }
         if focus.pendingManagedFocus.workspaceId != workspaceId {
@@ -494,7 +502,7 @@ final class WorkspaceManager {
     private func clearPendingManagedFocusRequest(
         focus: inout SessionState.FocusSession
     ) -> Bool {
-        guard focus.pendingManagedFocus.handle != nil
+        guard focus.pendingManagedFocus.token != nil
             || focus.pendingManagedFocus.workspaceId != nil
             || focus.pendingManagedFocus.monitorId != nil
         else {
@@ -505,15 +513,15 @@ final class WorkspaceManager {
     }
 
     private func clearPendingManagedFocusRequest(
-        matching handle: WindowHandle?,
+        matching token: WindowToken?,
         workspaceId: WorkspaceDescriptor.ID?,
         focus: inout SessionState.FocusSession
     ) -> Bool {
         let request = focus.pendingManagedFocus
-        let matchesHandle = handle.map { request.handle?.id == $0.id } ?? true
+        let matchesHandle = token.map { request.token == $0 } ?? true
         let matchesWorkspace = workspaceId.map { request.workspaceId == $0 } ?? true
         guard matchesHandle, matchesWorkspace else { return false }
-        guard request.handle != nil || request.workspaceId != nil || request.monitorId != nil else { return false }
+        guard request.token != nil || request.workspaceId != nil || request.monitorId != nil else { return false }
         focus.pendingManagedFocus = .init()
         return true
     }
@@ -695,12 +703,20 @@ final class WorkspaceManager {
     }
 
     @discardableResult
-    func addWindow(_ ax: AXWindowRef, pid: pid_t, windowId: Int, to workspace: WorkspaceDescriptor.ID) -> WindowHandle {
+    func addWindow(_ ax: AXWindowRef, pid: pid_t, windowId: Int, to workspace: WorkspaceDescriptor.ID) -> WindowToken {
         windows.upsert(window: ax, pid: pid, windowId: windowId, workspace: workspace)
     }
 
     func entries(in workspace: WorkspaceDescriptor.ID) -> [WindowModel.Entry] {
         windows.windows(in: workspace)
+    }
+
+    func handle(for token: WindowToken) -> WindowHandle? {
+        windows.handle(for: token)
+    }
+
+    func entry(for token: WindowToken) -> WindowModel.Entry? {
+        windows.entry(for: token)
     }
 
     func entry(for handle: WindowHandle) -> WindowModel.Entry? {
@@ -733,14 +749,14 @@ final class WorkspaceManager {
     func removeMissing(keys activeKeys: Set<WindowModel.WindowKey>, requiredConsecutiveMisses: Int = 1) {
         let removedEntries = windows.removeMissing(keys: activeKeys, requiredConsecutiveMisses: requiredConsecutiveMisses)
         for entry in removedEntries {
-            handleWindowRemoved(entry.handle, in: entry.workspaceId)
+            handleWindowRemoved(entry.token, in: entry.workspaceId)
         }
     }
 
     @discardableResult
     func removeWindow(pid: pid_t, windowId: Int) -> WindowModel.Entry? {
         guard let entry = windows.entry(forPid: pid, windowId: windowId) else { return nil }
-        handleWindowRemoved(entry.handle, in: entry.workspaceId)
+        handleWindowRemoved(entry.token, in: entry.workspaceId)
         _ = windows.removeWindow(key: .init(pid: pid, windowId: windowId))
         return entry
     }
@@ -752,51 +768,51 @@ final class WorkspaceManager {
 
         for entry in entriesToRemove {
             affectedWorkspaces.insert(entry.workspaceId)
-            handleWindowRemoved(entry.handle, in: entry.workspaceId)
+            handleWindowRemoved(entry.token, in: entry.workspaceId)
             _ = windows.removeWindow(key: .init(pid: pid, windowId: entry.windowId))
         }
 
         return affectedWorkspaces
     }
 
-    func setWorkspace(for handle: WindowHandle, to workspace: WorkspaceDescriptor.ID) {
-        windows.updateWorkspace(for: handle, workspace: workspace)
+    func setWorkspace(for token: WindowToken, to workspace: WorkspaceDescriptor.ID) {
+        windows.updateWorkspace(for: token, workspace: workspace)
     }
 
-    func workspace(for handle: WindowHandle) -> WorkspaceDescriptor.ID? {
-        windows.entry(for: handle)?.workspaceId
+    func workspace(for token: WindowToken) -> WorkspaceDescriptor.ID? {
+        windows.workspace(for: token)
     }
 
-    func isHiddenInCorner(_ handle: WindowHandle) -> Bool {
-        windows.isHiddenInCorner(handle)
+    func isHiddenInCorner(_ token: WindowToken) -> Bool {
+        windows.isHiddenInCorner(token)
     }
 
-    func setHiddenState(_ state: WindowModel.HiddenState?, for handle: WindowHandle) {
-        windows.setHiddenState(state, for: handle)
+    func setHiddenState(_ state: WindowModel.HiddenState?, for token: WindowToken) {
+        windows.setHiddenState(state, for: token)
     }
 
-    func hiddenState(for handle: WindowHandle) -> WindowModel.HiddenState? {
-        windows.hiddenState(for: handle)
+    func hiddenState(for token: WindowToken) -> WindowModel.HiddenState? {
+        windows.hiddenState(for: token)
     }
 
-    func layoutReason(for handle: WindowHandle) -> LayoutReason {
-        windows.layoutReason(for: handle)
+    func layoutReason(for token: WindowToken) -> LayoutReason {
+        windows.layoutReason(for: token)
     }
 
-    func setLayoutReason(_ reason: LayoutReason, for handle: WindowHandle) {
-        windows.setLayoutReason(reason, for: handle)
+    func setLayoutReason(_ reason: LayoutReason, for token: WindowToken) {
+        windows.setLayoutReason(reason, for: token)
     }
 
-    func restoreFromNativeState(for handle: WindowHandle) -> ParentKind? {
-        windows.restoreFromNativeState(for: handle)
+    func restoreFromNativeState(for token: WindowToken) -> ParentKind? {
+        windows.restoreFromNativeState(for: token)
     }
 
-    func cachedConstraints(for handle: WindowHandle, maxAge: TimeInterval = 5.0) -> WindowSizeConstraints? {
-        windows.cachedConstraints(for: handle, maxAge: maxAge)
+    func cachedConstraints(for token: WindowToken, maxAge: TimeInterval = 5.0) -> WindowSizeConstraints? {
+        windows.cachedConstraints(for: token, maxAge: maxAge)
     }
 
-    func setCachedConstraints(_ constraints: WindowSizeConstraints, for handle: WindowHandle) {
-        windows.setCachedConstraints(constraints, for: handle)
+    func setCachedConstraints(_ constraints: WindowSizeConstraints, for token: WindowToken) {
+        windows.setCachedConstraints(constraints, for: token)
     }
 
     @discardableResult
@@ -1569,7 +1585,7 @@ final class WorkspaceManager {
 
     private func reconcileInteractionMonitorState(notify: Bool = true) {
         let validMonitorIds = Set(monitors.map(\.id))
-        let focusedWorkspaceMonitorId = sessionState.focus.focusedHandle
+        let focusedWorkspaceMonitorId = sessionState.focus.focusedToken
             .flatMap { entry(for: $0)?.workspaceId }
             .flatMap { monitorId(for: $0) }
         let newInteractionMonitorId = sessionState.interactionMonitorId.flatMap {

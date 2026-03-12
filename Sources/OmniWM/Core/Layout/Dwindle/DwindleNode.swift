@@ -34,7 +34,7 @@ extension Direction {
 
 enum DwindleNodeKind {
     case split(orientation: DwindleOrientation, ratio: CGFloat)
-    case leaf(handle: WindowHandle?, fullscreen: Bool)
+    case leaf(handle: WindowToken?, fullscreen: Bool)
 }
 
 final class DwindleNode {
@@ -66,7 +66,7 @@ final class DwindleNode {
         return false
     }
 
-    var windowHandle: WindowHandle? {
+    var windowToken: WindowToken? {
         if case let .leaf(handle, _) = kind { return handle }
         return nil
     }
@@ -169,8 +169,8 @@ final class DwindleNode {
         }
     }
 
-    func collectAllWindows() -> [WindowHandle] {
-        collectAllLeaves().compactMap { $0.windowHandle }
+    func collectAllWindows() -> [WindowToken] {
+        collectAllLeaves().compactMap { $0.windowToken }
     }
 
     func animateFrom(oldFrame: CGRect, newFrame: CGRect, clock: AnimationClock?, config: CubicConfig) {

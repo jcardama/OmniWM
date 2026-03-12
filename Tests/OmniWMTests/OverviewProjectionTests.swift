@@ -12,12 +12,15 @@ private func makeOverviewProjectionWindow(
     title: String
 ) -> (handle: WindowHandle, data: OverviewWindowLayoutData) {
     let axRef = AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: windowId)
-    let handle = model.upsert(
+    let token = model.upsert(
         window: axRef,
         pid: pid_t(windowId),
         windowId: windowId,
         workspace: workspaceId
     )
+    guard let handle = model.handle(for: token) else {
+        fatalError("Expected overview projection bridge handle")
+    }
     let entry = model.entry(for: handle)!
     return (
         handle,

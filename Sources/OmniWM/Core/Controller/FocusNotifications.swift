@@ -11,6 +11,8 @@ enum OmniWMFocusNotificationKey {
     static let newMonitorName = "newMonitorName"
     static let oldWindowId = "oldWindowId"
     static let newWindowId = "newWindowId"
+    static let oldWindowToken = "oldWindowToken"
+    static let newWindowToken = "newWindowToken"
     static let oldHandleId = "oldHandleId"
     static let newHandleId = "newHandleId"
 }
@@ -27,7 +29,7 @@ final class FocusNotificationDispatcher {
 
     private var lastNotifiedWorkspaceId: WorkspaceDescriptor.ID?
     private var lastNotifiedMonitorId: Monitor.ID?
-    private var lastNotifiedFocusedHandleId: UUID?
+    private var lastNotifiedFocusedToken: WindowToken?
     private var lastNotifiedFocusedWindowId: Int?
 
     init(controller: WMController) {
@@ -38,23 +40,29 @@ final class FocusNotificationDispatcher {
         guard let controller else { return }
 
         let currentMonitorId = controller.workspaceManager.interactionMonitorId ?? controller.monitorForInteraction()?.id
-        let currentWorkspaceId = controller.workspaceManager.focusedHandle
+        let currentWorkspaceId = controller.workspaceManager.focusedToken
             .flatMap { controller.workspaceManager.workspace(for: $0) }
             ?? currentMonitorId.flatMap { controller.workspaceManager.currentActiveWorkspace(on: $0)?.id }
 
-        let currentHandleId = controller.workspaceManager.focusedHandle?.id
-        let currentWindowId = controller.workspaceManager.focusedHandle
+        let currentToken = controller.workspaceManager.focusedToken
+        let currentWindowId = currentToken
             .flatMap { controller.workspaceManager.entry(for: $0)?.windowId }
 
-        if currentHandleId != lastNotifiedFocusedHandleId || currentWindowId != lastNotifiedFocusedWindowId {
+        if currentToken != lastNotifiedFocusedToken || currentWindowId != lastNotifiedFocusedWindowId {
             var info: [AnyHashable: Any] = [:]
-            if let oldHandleId = lastNotifiedFocusedHandleId { info[OmniWMFocusNotificationKey.oldHandleId] = oldHandleId }
-            if let newHandleId = currentHandleId { info[OmniWMFocusNotificationKey.newHandleId] = newHandleId }
+            if let oldToken = lastNotifiedFocusedToken {
+                info[OmniWMFocusNotificationKey.oldWindowToken] = oldToken
+                info[OmniWMFocusNotificationKey.oldHandleId] = oldToken
+            }
+            if let newToken = currentToken {
+                info[OmniWMFocusNotificationKey.newWindowToken] = newToken
+                info[OmniWMFocusNotificationKey.newHandleId] = newToken
+            }
             if let oldWindowId = lastNotifiedFocusedWindowId { info[OmniWMFocusNotificationKey.oldWindowId] = oldWindowId }
             if let newWindowId = currentWindowId { info[OmniWMFocusNotificationKey.newWindowId] = newWindowId }
 
             NotificationCenter.default.post(name: .omniwmFocusChanged, object: controller, userInfo: info.isEmpty ? nil : info)
-            lastNotifiedFocusedHandleId = currentHandleId
+            lastNotifiedFocusedToken = currentToken
             lastNotifiedFocusedWindowId = currentWindowId
         }
 

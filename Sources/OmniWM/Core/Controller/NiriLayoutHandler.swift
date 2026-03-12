@@ -14,7 +14,7 @@ import QuartzCore
     }
 
     struct RemovalContext {
-        var existingHandleIds: Set<UUID>
+        var existingHandleIds: Set<WindowToken>
         var wasEmptyBeforeSync: Bool
         var columnRemovalResult: NiriLayoutEngine.ColumnRemovalResult?
         var precomputedFallback: NodeId?
@@ -120,15 +120,16 @@ import QuartzCore
         var hiddenWindowJobs: [(pid: pid_t, windowId: Int)] = []
         var visibleWindowJobs: [(pid: pid_t, windowId: Int)] = []
 
-        for (handle, frame) in frames {
-            guard let entry = controller.workspaceManager.entry(for: handle) else { continue }
+        for (token, frame) in frames {
+            guard let entry = controller.workspaceManager.entry(for: token) else { continue }
+            let handle = entry.handle
 
-            if let node = engine.findNode(for: handle),
+            if let node = engine.findNode(for: token),
                node.sizingMode == .fullscreen {
                 controller.axManager.forceApplyNextFrame(for: entry.windowId)
             }
 
-            if let side = hiddenHandles[handle] {
+            if let side = hiddenHandles[token] {
                 let actualSize = AXWindowService.framePreferFast(entry.axRef)?.size ?? frame.size
                 let hiddenOrigin = lrc.hiddenOrigin(
                     for: actualSize,
@@ -170,37 +171,37 @@ import QuartzCore
 
     private func finalizeAnimation() {
         guard let controller,
-              let focusedHandle = controller.workspaceManager.focusedHandle,
-              let entry = controller.workspaceManager.entry(for: focusedHandle),
+              let focusedToken = controller.workspaceManager.focusedToken,
+              let entry = controller.workspaceManager.entry(for: focusedToken),
               let engine = controller.niriEngine
         else { return }
 
-        if let node = engine.findNode(for: focusedHandle),
+        if let node = engine.findNode(for: focusedToken),
            let frame = node.frame {
-            controller.borderCoordinator.updateBorderIfAllowed(handle: focusedHandle, frame: frame, windowId: entry.windowId)
+            controller.borderCoordinator.updateBorderIfAllowed(token: focusedToken, frame: frame, windowId: entry.windowId)
         }
 
         if controller.moveMouseToFocusedWindowEnabled {
-            controller.moveMouseToWindow(focusedHandle)
+            controller.moveMouseToWindow(focusedToken)
         }
     }
 
     private func updateBorderDuringLayout(
-        frames: [WindowHandle: CGRect],
-        hiddenHandles: [WindowHandle: HideSide],
+        frames: [WindowToken: CGRect],
+        hiddenHandles: [WindowToken: HideSide],
         direct: Bool
     ) {
         guard let controller,
-              let focusedHandle = controller.workspaceManager.focusedHandle else { return }
+              let focusedToken = controller.workspaceManager.focusedToken else { return }
 
-        if hiddenHandles[focusedHandle] != nil {
+        if hiddenHandles[focusedToken] != nil {
             controller.borderManager.hideBorder()
-        } else if let frame = frames[focusedHandle],
-                  let entry = controller.workspaceManager.entry(for: focusedHandle) {
+        } else if let frame = frames[focusedToken],
+                  let entry = controller.workspaceManager.entry(for: focusedToken) {
             if direct {
                 controller.borderManager.updateFocusedWindow(frame: frame, windowId: entry.windowId)
             } else {
-                controller.borderCoordinator.updateBorderIfAllowed(handle: focusedHandle, frame: frame, windowId: entry.windowId)
+                controller.borderCoordinator.updateBorderIfAllowed(token: focusedToken, frame: frame, windowId: entry.windowId)
             }
         }
     }
@@ -236,7 +237,7 @@ import QuartzCore
             let layoutType = controller.settings.layoutType(for: workspace.name)
             if layoutType == .dwindle { continue }
 
-            let windowHandles = controller.workspaceManager.entries(in: wsId).map(\.handle)
+            let windowTokens = controller.workspaceManager.entries(in: wsId).map(\.token)
 
             controller.workspaceManager.withNiriViewportState(for: wsId) { state in
                 let currentSelection = state.selectedNodeId
@@ -252,7 +253,7 @@ import QuartzCore
                 let removal = self.processWindowRemovals(
                     pass: pass,
                     state: &state,
-                    windowHandles: windowHandles,
+                    windowTokens: windowTokens,
                     currentSelection: currentSelection,
                     removedNodeId: removedNodeId
                 )
@@ -260,7 +261,7 @@ import QuartzCore
                 let newHandles = self.syncAndInsert(
                     pass: pass,
                     state: &state,
-                    windowHandles: windowHandles,
+                    windowTokens: windowTokens,
                     removal: removal
                 )
 
@@ -269,21 +270,21 @@ import QuartzCore
                 let viewportNeedsRecalc = self.resolveSelection(
                     pass: pass,
                     state: &state,
-                    windowHandles: windowHandles,
+                    windowTokens: windowTokens,
                     removal: removal
                 )
 
-                let newWindowHandle = self.handleNewWindowArrival(
+                let newWindowToken = self.handleNewWindowArrival(
                     pass: pass,
                     state: &state,
-                    newHandles: newHandles,
+                    newTokens: newHandles,
                     existingHandleIds: removal.existingHandleIds
                 )
 
                 self.computeAndApplyLayout(
                     pass: pass,
                     state: state,
-                    newWindowHandle: newWindowHandle,
+                    newWindowToken: newWindowToken,
                     viewportNeedsRecalc: viewportNeedsRecalc,
                     useScrollAnimationPath: useScrollAnimationPath
                 )
@@ -299,15 +300,12 @@ import QuartzCore
     private func processWindowRemovals(
         pass: NiriLayoutPass,
         state: inout ViewportState,
-        windowHandles: [WindowHandle],
+        windowTokens: [WindowToken],
         currentSelection: NodeId?,
         removedNodeId: NodeId?
     ) -> RemovalContext {
         let existingHandleIds = pass.engine.root(for: pass.wsId)?.windowIdSet ?? []
-        var currentHandleIds = Set<UUID>(minimumCapacity: windowHandles.count)
-        for handle in windowHandles {
-            currentHandleIds.insert(handle.id)
-        }
+        let currentHandleIds = Set(windowTokens)
         let removedHandleIds = existingHandleIds.subtracting(currentHandleIds)
 
         var precomputedFallback: NodeId?
@@ -317,12 +315,12 @@ import QuartzCore
         let wasEmptyBeforeSync = pass.engine.columns(in: pass.wsId).isEmpty
 
         for removedHandleId in removedHandleIds {
-            guard let window = pass.engine.root(for: pass.wsId)?.allWindows.first(where: { $0.handle.id == removedHandleId }),
+            guard let window = pass.engine.findNode(for: removedHandleId),
                   let col = pass.engine.column(of: window),
                   let colIdx = pass.engine.columnIndex(of: col, in: pass.wsId) else { continue }
 
             let allWindowsInColumnRemoved = col.windowNodes.allSatisfy { w in
-                !currentHandleIds.contains(w.handle.id)
+                !currentHandleIds.contains(w.token)
             }
 
             if allWindowsInColumnRemoved && columnRemovalResult == nil {
@@ -356,19 +354,19 @@ import QuartzCore
     private func syncAndInsert(
         pass: NiriLayoutPass,
         state: inout ViewportState,
-        windowHandles: [WindowHandle],
+        windowTokens: [WindowToken],
         removal: RemovalContext
-    ) -> [WindowHandle] {
+    ) -> [WindowToken] {
         guard let controller else { return [] }
 
         let currentSelection = state.selectedNodeId
         _ = pass.engine.syncWindows(
-            windowHandles,
+            windowTokens,
             in: pass.wsId,
             selectedNodeId: currentSelection,
-            focusedHandle: controller.workspaceManager.preferredFocusHandle(in: pass.wsId)
+            focusedToken: controller.workspaceManager.preferredFocusToken(in: pass.wsId)
         )
-        let newHandles = windowHandles.filter { !removal.existingHandleIds.contains($0.id) }
+        let newTokens = windowTokens.filter { !removal.existingHandleIds.contains($0) }
 
         for col in pass.engine.columns(in: pass.wsId) {
             if col.cachedWidth <= 0 {
@@ -376,10 +374,10 @@ import QuartzCore
             }
         }
 
-        if !removal.wasEmptyBeforeSync, !newHandles.isEmpty {
+        if !removal.wasEmptyBeforeSync, !newTokens.isEmpty {
             var newColumnData: [(col: NiriContainer, colIdx: Int)] = []
-            for newHandle in newHandles {
-                if let node = pass.engine.findNode(for: newHandle),
+            for newToken in newTokens {
+                if let node = pass.engine.findNode(for: newToken),
                    let col = pass.engine.column(of: node),
                    let colIdx = pass.engine.columnIndex(of: col, in: pass.wsId)
                 {
@@ -411,13 +409,13 @@ import QuartzCore
             }
         }
 
-        return newHandles
+        return newTokens
     }
 
     private func resolveSelection(
         pass: NiriLayoutPass,
         state: inout ViewportState,
-        windowHandles: [WindowHandle],
+        windowTokens: [WindowToken],
         removal: RemovalContext
     ) -> Bool {
         guard let controller else { return false }
@@ -447,8 +445,8 @@ import QuartzCore
         }
 
         if state.selectedNodeId == nil {
-            if let firstHandle = windowHandles.first,
-               let firstNode = pass.engine.findNode(for: firstHandle)
+            if let firstToken = windowTokens.first,
+               let firstNode = pass.engine.findNode(for: firstToken)
             {
                 state.selectedNodeId = firstNode.id
             }
@@ -493,7 +491,7 @@ import QuartzCore
         {
             _ = controller.workspaceManager.syncWorkspaceSelection(
                 nodeId: selectedNode.id,
-                focusedHandle: selectedNode.handle,
+                focusedToken: selectedNode.token,
                 in: pass.wsId,
                 onMonitor: controller.workspaceManager.monitorId(for: pass.wsId)
             )
@@ -505,18 +503,18 @@ import QuartzCore
     private func handleNewWindowArrival(
         pass: NiriLayoutPass,
         state: inout ViewportState,
-        newHandles: [WindowHandle],
-        existingHandleIds: Set<UUID>
-    ) -> WindowHandle? {
+        newTokens: [WindowToken],
+        existingHandleIds: Set<WindowToken>
+    ) -> WindowToken? {
         guard let controller else { return nil }
         let lrc = controller.layoutRefreshController
 
         let wasEmpty = existingHandleIds.isEmpty
 
-        var newWindowHandle: WindowHandle?
+        var newWindowToken: WindowToken?
         if lrc.layoutState.hasCompletedInitialRefresh,
-           let newHandle = newHandles.last,
-           let newNode = pass.engine.findNode(for: newHandle),
+           let newToken = newTokens.last,
+           let newNode = pass.engine.findNode(for: newToken),
            pass.wsId == controller.activeWorkspace()?.id
         {
             state.selectedNodeId = newNode.id
@@ -555,22 +553,22 @@ import QuartzCore
                 }
             }
             _ = controller.workspaceManager.rememberFocus(
-                newHandle,
+                newToken,
                 in: pass.wsId
             )
             pass.engine.updateFocusTimestamp(for: newNode.id)
-            newWindowHandle = newHandle
+            newWindowToken = newToken
         }
 
         if lrc.layoutState.hasCompletedInitialRefresh,
            pass.wsId == controller.activeWorkspace()?.id,
-           !newHandles.isEmpty
+           !newTokens.isEmpty
         {
             let reduceMotionScale: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.25 : 1.0
             let appearOffset = 16.0 * reduceMotionScale
 
-            for handle in newHandles {
-                guard let window = pass.engine.findNode(for: handle),
+            for token in newTokens {
+                guard let window = pass.engine.findNode(for: token),
                       !window.isHiddenInTabbedMode else { continue }
 
                 if abs(appearOffset) > 0.1 {
@@ -584,13 +582,13 @@ import QuartzCore
             }
         }
 
-        return newWindowHandle
+        return newWindowToken
     }
 
     private func computeAndApplyLayout(
         pass: NiriLayoutPass,
         state: ViewportState,
-        newWindowHandle: WindowHandle?,
+        newWindowToken: WindowToken?,
         viewportNeedsRecalc: Bool,
         useScrollAnimationPath: Bool
     ) {
@@ -621,23 +619,23 @@ import QuartzCore
         let hasColumnAnimations = pass.engine.hasAnyColumnAnimationsRunning(in: pass.wsId)
 
         if !useScrollAnimationPath {
-            if viewportNeedsRecalc, newWindowHandle == nil {
+            if viewportNeedsRecalc, newWindowToken == nil {
                 lrc.startScrollAnimation(for: pass.wsId)
             } else if hasColumnAnimations {
                 lrc.startScrollAnimation(for: pass.wsId)
             }
         }
 
-        if let newHandle = newWindowHandle {
+        if let newWindowToken {
             lrc.startScrollAnimation(for: pass.wsId)
-            controller.focusWindow(newHandle)
+            controller.focusWindow(newWindowToken)
         }
 
         let workspaceEntries = controller.workspaceManager.entries(in: pass.wsId)
         var hiddenWindowJobs: [(pid: pid_t, windowId: Int)] = []
         var visibleWindowJobs: [(pid: pid_t, windowId: Int)] = []
         for entry in workspaceEntries {
-            if hiddenHandles[entry.handle] != nil {
+            if hiddenHandles[entry.token] != nil {
                 hiddenWindowJobs.append((entry.handle.pid, entry.windowId))
             } else {
                 visibleWindowJobs.append((entry.handle.pid, entry.windowId))
@@ -649,8 +647,8 @@ import QuartzCore
         }
 
         for entry in workspaceEntries {
-            if let side = hiddenHandles[entry.handle] {
-                let targetY = frames[entry.handle]?.origin.y
+            if let side = hiddenHandles[entry.token] {
+                let targetY = frames[entry.token]?.origin.y
                 lrc.hideWindow(entry, monitor: pass.monitor, side: side, targetY: targetY, reason: .layoutTransient)
             } else {
                 lrc.unhideWindow(entry, monitor: pass.monitor)
@@ -659,14 +657,14 @@ import QuartzCore
 
         var frameUpdates: [(pid: pid_t, windowId: Int, frame: CGRect)] = []
 
-        for (handle, frame) in frames {
-            if hiddenHandles[handle] != nil { continue }
-            if let entry = controller.workspaceManager.entry(for: handle) {
-                if let node = pass.engine.findNode(for: handle),
+        for (token, frame) in frames {
+            if hiddenHandles[token] != nil { continue }
+            if let entry = controller.workspaceManager.entry(for: token) {
+                if let node = pass.engine.findNode(for: token),
                    node.sizingMode == .fullscreen {
                     controller.axManager.forceApplyNextFrame(for: entry.windowId)
                 }
-                frameUpdates.append((handle.pid, entry.windowId, frame))
+                frameUpdates.append((entry.pid, entry.windowId, frame))
             }
         }
 
@@ -773,15 +771,15 @@ import QuartzCore
             guard let currentId = state.selectedNodeId,
                   let currentNode = engine.findNode(by: currentId)
             else {
-                if let lastFocused = controller.workspaceManager.lastFocusedHandle(in: wsId),
+                if let lastFocused = controller.workspaceManager.lastFocusedToken(in: wsId),
                    let lastNode = engine.findNode(for: lastFocused)
                 {
                     self.activateNode(
                         lastNode, in: wsId, state: &state,
                         options: .init(activateWindow: false, ensureVisible: false, layoutRefresh: false, startAnimation: false)
                     )
-                } else if let firstHandle = controller.workspaceManager.entries(in: wsId).first?.handle,
-                          let firstNode = engine.findNode(for: firstHandle)
+                } else if let firstToken = controller.workspaceManager.entries(in: wsId).first?.token,
+                          let firstNode = engine.findNode(for: firstToken)
                 {
                     self.activateNode(
                         firstNode, in: wsId, state: &state,
@@ -974,16 +972,16 @@ import QuartzCore
             if options.updateTimestamp {
                 engine.updateFocusTimestamp(for: windowNode.id)
             }
-            _ = controller.workspaceManager.rememberFocus(windowNode.handle, in: workspaceId)
+            _ = controller.workspaceManager.rememberFocus(windowNode.token, in: workspaceId)
         }
 
         if options.layoutRefresh {
-            let focusHandle = options.axFocus ? (node as? NiriWindow)?.handle : nil
+            let focusToken = options.axFocus ? (node as? NiriWindow)?.token : nil
             controller.layoutRefreshController.requestImmediateRelayout(
                 reason: .layoutCommand
             ) { [weak controller] in
-                if let handle = focusHandle {
-                    controller?.focusWindow(handle)
+                if let focusToken {
+                    controller?.focusWindow(focusToken)
                 }
             }
             if options.startAnimation, state.viewOffsetPixels.isAnimating {
@@ -991,7 +989,7 @@ import QuartzCore
             }
         } else {
             if options.axFocus, let windowNode = node as? NiriWindow {
-                controller.focusWindow(windowNode.handle)
+                controller.focusWindow(windowNode.token)
             }
             if options.startAnimation, state.viewOffsetPixels.isAnimating {
                 controller.layoutRefreshController.startScrollAnimation(for: workspaceId)
@@ -1142,7 +1140,7 @@ struct NodeActivationOptions {
 
     func commitWithPredictedAnimation(
         state: ViewportState,
-        oldFrames: [WindowHandle: CGRect]
+        oldFrames: [WindowToken: CGRect]
     ) -> Bool {
         let scale = NSScreen.screens.first(where: { $0.displayId == monitor.displayId })?
             .backingScaleFactor ?? 2.0
@@ -1172,7 +1170,7 @@ struct NodeActivationOptions {
 
     func commitWithCapturedAnimation(
         state: ViewportState,
-        oldFrames: [WindowHandle: CGRect]
+        oldFrames: [WindowToken: CGRect]
     ) -> Bool {
         controller.layoutRefreshController.requestImmediateRelayout(reason: .layoutCommand)
         let newFrames = engine.captureWindowFrames(in: wsId)

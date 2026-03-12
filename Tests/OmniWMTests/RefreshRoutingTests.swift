@@ -166,12 +166,15 @@ private func addFocusedWindow(
     workspaceId: WorkspaceDescriptor.ID,
     windowId: Int
 ) -> WindowHandle {
-    let handle = controller.workspaceManager.addWindow(
+    let token = controller.workspaceManager.addWindow(
         makeRefreshTestWindow(windowId: windowId),
         pid: getpid(),
         windowId: windowId,
         to: workspaceId
     )
+    guard let handle = controller.workspaceManager.handle(for: token) else {
+        fatalError("Expected bridge handle for focused refresh test window")
+    }
     _ = controller.workspaceManager.setManagedFocus(
         handle,
         in: workspaceId,
@@ -187,12 +190,16 @@ private func addWindow(
     pid: pid_t,
     windowId: Int
 ) -> WindowHandle {
-    controller.workspaceManager.addWindow(
+    let token = controller.workspaceManager.addWindow(
         makeRefreshTestWindow(windowId: windowId),
         pid: pid,
         windowId: windowId,
         to: workspaceId
     )
+    guard let handle = controller.workspaceManager.handle(for: token) else {
+        fatalError("Expected bridge handle for refresh test window")
+    }
+    return handle
 }
 
 @MainActor
@@ -249,12 +256,15 @@ private func prepareNiriState(
     var workspaceByWindowId: [Int: WorkspaceDescriptor.ID] = [:]
 
     for (workspaceId, windowId) in assignments {
-        let handle = controller.workspaceManager.addWindow(
+        let token = controller.workspaceManager.addWindow(
             makeRefreshTestWindow(windowId: windowId),
             pid: getpid(),
             windowId: windowId,
             to: workspaceId
         )
+        guard let handle = controller.workspaceManager.handle(for: token) else {
+            fatalError("Expected bridge handle for seeded refresh window")
+        }
         handlesByWindowId[windowId] = handle
         workspaceByWindowId[windowId] = workspaceId
         _ = controller.workspaceManager.rememberFocus(handle, in: workspaceId)
@@ -582,12 +592,16 @@ private func prepareNiriState(
             return
         }
 
-        let handle = controller.workspaceManager.addWindow(
+        let token = controller.workspaceManager.addWindow(
             makeRefreshTestWindow(windowId: 202),
             pid: getpid(),
             windowId: 202,
             to: workspaceTwo
         )
+        guard let handle = controller.workspaceManager.handle(for: token) else {
+            Issue.record("Failed to create bridge handle")
+            return
+        }
         guard let entry = controller.workspaceManager.entry(for: handle) else {
             Issue.record("Failed to create managed entry")
             return

@@ -83,7 +83,7 @@ final class MouseEventHandler {
         var isMoving: Bool = false
 
         var lastFocusFollowsMouseTime: Date = .distantPast
-        var lastFocusFollowsMouseHandle: WindowHandle?
+        var lastFocusFollowsMouseToken: WindowToken?
         let focusFollowsMouseDebounce: TimeInterval = 0.1
         var dragGhostController: DragGhostController?
         var moveIsInsertMode: Bool = false
@@ -813,11 +813,11 @@ final class MouseEventHandler {
         }
 
         if let tiledWindow = engine.hitTestTiled(point: location, in: wsId) {
-            let handle = tiledWindow.handle
-            if handle != state.lastFocusFollowsMouseHandle,
-               handle != controller.workspaceManager.focusedHandle {
+            let token = tiledWindow.token
+            if token != state.lastFocusFollowsMouseToken,
+               token != controller.workspaceManager.focusedToken {
                 state.lastFocusFollowsMouseTime = now
-                state.lastFocusFollowsMouseHandle = handle
+                state.lastFocusFollowsMouseToken = token
                 controller.workspaceManager.withNiriViewportState(for: wsId) { vstate in
                     controller.niriLayoutHandler.activateNode(tiledWindow, in: wsId, state: &vstate)
                 }
@@ -1002,9 +1002,9 @@ final class MouseEventHandler {
                     vstate.selectedNodeId = newNode.id
 
                     if let windowNode = newNode as? NiriWindow {
-                        _ = controller.workspaceManager.rememberFocus(windowNode.handle, in: wsId)
+                        _ = controller.workspaceManager.rememberFocus(windowNode.token, in: wsId)
                         engine.updateFocusTimestamp(for: windowNode.id)
-                        targetWindowHandle = windowNode.handle
+                        targetWindowHandle = controller.workspaceManager.handle(for: windowNode.token)
                     }
                 }
             }

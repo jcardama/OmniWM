@@ -2,15 +2,24 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
-final class WindowHandle: Hashable {
-    let id: UUID
+struct WindowToken: Hashable, Sendable {
     let pid: pid_t
-    let axElement: AXUIElement
+    let windowId: Int
+}
 
-    init(id: UUID, pid: pid_t, axElement: AXUIElement) {
+final class WindowHandle: Hashable {
+    let id: WindowToken
+
+    var token: WindowToken { id }
+    var pid: pid_t { id.pid }
+    var windowId: Int { id.windowId }
+
+    init(id: WindowToken) {
         self.id = id
-        self.pid = pid
-        self.axElement = axElement
+    }
+
+    init(id: WindowToken, pid _: pid_t, axElement _: AXUIElement) {
+        self.id = id
     }
 
     static func == (lhs: WindowHandle, rhs: WindowHandle) -> Bool {

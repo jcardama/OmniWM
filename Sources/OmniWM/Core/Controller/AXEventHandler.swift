@@ -57,9 +57,9 @@ final class AXEventHandler: CGSEventDelegate {
         }
     }
 
-    private func isWindowDisplayable(windowId: UInt32) -> Bool {
+    private func isWindowDisplayable(token: WindowToken) -> Bool {
         guard let controller else { return false }
-        guard let entry = controller.workspaceManager.entry(forWindowId: Int(windowId)) else {
+        guard let entry = controller.workspaceManager.entry(for: token) else {
             return false
         }
         return controller.isManagedWindowDisplayable(entry.handle)
@@ -73,15 +73,15 @@ final class AXEventHandler: CGSEventDelegate {
             return
         }
 
-        if controller.workspaceManager.entry(forWindowId: Int(windowId)) != nil {
+        guard let token = resolveWindowToken(windowId) else {
             return
         }
 
-        guard let windowInfo = resolveWindowInfo(windowId) else {
+        if controller.workspaceManager.entry(for: token) != nil {
             return
         }
 
-        let pid = windowInfo.pid
+        let pid = token.pid
         subscribeToWindows([windowId])
 
         if let axRef = resolveAXWindowRef(windowId: windowId, pid: pid) {
@@ -95,10 +95,11 @@ final class AXEventHandler: CGSEventDelegate {
 
     private func handleFrameChanged(windowId: UInt32) {
         guard let controller else { return }
+        guard let token = resolveTrackedToken(windowId) else { return }
 
-        updateFocusedBorderForFrameChange(windowId: windowId)
+        updateFocusedBorderForFrameChange(token: token)
 
-        guard isWindowDisplayable(windowId: windowId) else {
+        guard isWindowDisplayable(token: token) else {
             return
         }
 
@@ -111,29 +112,26 @@ final class AXEventHandler: CGSEventDelegate {
         controller.layoutRefreshController.requestRelayout(reason: .axWindowChanged)
     }
 
-    private func updateFocusedBorderForFrameChange(windowId: UInt32) {
+    private func updateFocusedBorderForFrameChange(token: WindowToken) {
         guard let controller else { return }
-        guard let focusedHandle = controller.workspaceManager.focusedHandle,
-              let entry = controller.workspaceManager.entry(for: focusedHandle),
-              entry.windowId == Int(windowId)
+        guard controller.workspaceManager.focusedToken == token,
+              let entry = controller.workspaceManager.entry(for: token)
         else { return }
 
         if let frame = frameProvider?(entry.axRef) ?? (try? AXWindowService.frame(entry.axRef)) {
-            controller.borderCoordinator.updateBorderIfAllowed(handle: focusedHandle, frame: frame, windowId: Int(windowId))
+            controller.borderCoordinator.updateBorderIfAllowed(token: token, frame: frame, windowId: entry.windowId)
         }
     }
 
     private func handleCGSWindowDestroyed(windowId: UInt32) {
         guard let controller else { return }
         removeDeferredCreatedWindow(windowId)
-        guard let entry = controller.workspaceManager.entry(
-            forWindowId: Int(windowId),
-            inVisibleWorkspaces: true
-        ) else {
+        guard let token = resolveTrackedToken(windowId),
+              controller.workspaceManager.entry(for: token) != nil else {
             return
         }
 
-        handleRemoved(pid: entry.handle.pid, winId: Int(windowId))
+        handleRemoved(token: token)
     }
 
     func subscribeToManagedWindows() {
@@ -153,13 +151,13 @@ final class AXEventHandler: CGSEventDelegate {
 
         for windowId in deferredWindowIds {
             guard let controller else { return }
-            if controller.workspaceManager.entry(forWindowId: Int(windowId)) != nil {
+            guard let token = resolveWindowToken(windowId) else {
                 continue
             }
-            guard let windowInfo = resolveWindowInfo(windowId) else {
+            if controller.workspaceManager.entry(for: token) != nil {
                 continue
             }
-            let pid = windowInfo.pid
+            let pid = token.pid
             guard let axRef = resolveAXWindowRef(windowId: windowId, pid: pid) else {
                 continue
             }
@@ -210,11 +208,15 @@ final class AXEventHandler: CGSEventDelegate {
     }
 
     func handleRemoved(pid: pid_t, winId: Int) {
+        handleRemoved(token: .init(pid: pid, windowId: winId))
+    }
+
+    func handleRemoved(token: WindowToken) {
         guard let controller else { return }
-        let entry = controller.workspaceManager.entry(forPid: pid, windowId: winId)
+        let entry = controller.workspaceManager.entry(for: token)
         let affectedWorkspaceId = entry?.workspaceId
         let removedHandle = entry?.handle
-        let shouldRecoverFocus = removedHandle?.id == controller.workspaceManager.focusedHandle?.id
+        let shouldRecoverFocus = token == controller.workspaceManager.focusedToken
         let layoutType = affectedWorkspaceId
             .flatMap { controller.workspaceManager.descriptor(for: $0)?.name }
             .map { controller.settings.layoutType(for: $0) } ?? .defaultLayout
@@ -225,8 +227,8 @@ final class AXEventHandler: CGSEventDelegate {
            controller.workspaceManager.activeWorkspace(on: monitor.id)?.id == wsId,
            layoutType != .dwindle
         {
-            let shouldAnimate = if let engine = controller.niriEngine,
-                                    let windowNode = engine.findNode(for: entry.handle)
+           let shouldAnimate = if let engine = controller.niriEngine,
+                                    let windowNode = engine.findNode(for: token)
             {
                 !windowNode.isHiddenInTabbedMode
             } else {
@@ -241,19 +243,17 @@ final class AXEventHandler: CGSEventDelegate {
         }
 
         if let removed = removedHandle {
-            controller.focusCoordinator.discardPendingFocus(removed)
+            controller.focusCoordinator.discardPendingFocus(removed.id)
         }
 
-        var oldFrames: [WindowHandle: CGRect] = [:]
+        var oldFrames: [WindowToken: CGRect] = [:]
         var removedNodeId: NodeId?
         if let wsId = affectedWorkspaceId, layoutType != .dwindle, let engine = controller.niriEngine {
             oldFrames = engine.captureWindowFrames(in: wsId)
-            if let handle = removedHandle {
-                removedNodeId = engine.findNode(for: handle)?.id
-            }
+            removedNodeId = engine.findNode(for: token)?.id
         }
 
-        _ = controller.workspaceManager.removeWindow(pid: pid, windowId: winId)
+        _ = controller.workspaceManager.removeWindow(pid: token.pid, windowId: token.windowId)
 
         if let wsId = affectedWorkspaceId {
             controller.layoutRefreshController.requestWindowRemoval(
@@ -324,7 +324,7 @@ final class AXEventHandler: CGSEventDelegate {
         let shouldActivateWorkspace = !isWorkspaceActive && !controller.isTransferringWindow
 
         _ = controller.workspaceManager.confirmManagedFocus(
-            entry.handle,
+            entry.token,
             in: wsId,
             onMonitor: monitorId,
             appFullscreen: appFullscreen,
@@ -364,7 +364,7 @@ final class AXEventHandler: CGSEventDelegate {
         controller.hiddenAppPIDs.insert(pid)
 
         for entry in controller.workspaceManager.entries(forPid: pid) {
-            controller.workspaceManager.setLayoutReason(.macosHiddenApp, for: entry.handle)
+            controller.workspaceManager.setLayoutReason(.macosHiddenApp, for: entry.token)
         }
         controller.layoutRefreshController.requestVisibilityRefresh(reason: .appHidden)
     }
@@ -374,8 +374,8 @@ final class AXEventHandler: CGSEventDelegate {
         controller.hiddenAppPIDs.remove(pid)
 
         for entry in controller.workspaceManager.entries(forPid: pid) {
-            if controller.workspaceManager.layoutReason(for: entry.handle) == .macosHiddenApp {
-                _ = controller.workspaceManager.restoreFromNativeState(for: entry.handle)
+            if controller.workspaceManager.layoutReason(for: entry.token) == .macosHiddenApp {
+                _ = controller.workspaceManager.restoreFromNativeState(for: entry.token)
             }
         }
         controller.layoutRefreshController.requestVisibilityRefresh(reason: .appUnhidden)
@@ -393,6 +393,21 @@ final class AXEventHandler: CGSEventDelegate {
 
     private func resolveWindowInfo(_ windowId: UInt32) -> WindowServerInfo? {
         windowInfoProvider?(windowId) ?? SkyLight.shared.queryWindowInfo(windowId)
+    }
+
+    private func resolveWindowToken(_ windowId: UInt32) -> WindowToken? {
+        guard let windowInfo = resolveWindowInfo(windowId) else { return nil }
+        return .init(pid: windowInfo.pid, windowId: Int(windowId))
+    }
+
+    private func resolveTrackedToken(_ windowId: UInt32) -> WindowToken? {
+        if let token = resolveWindowToken(windowId) {
+            return token
+        }
+        guard let controller else { return nil }
+        let matches = controller.workspaceManager.allEntries().filter { $0.windowId == Int(windowId) }
+        guard matches.count == 1 else { return nil }
+        return matches[0].token
     }
 
     private func resolveAXWindowRef(windowId: UInt32, pid: pid_t) -> AXWindowRef? {

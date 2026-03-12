@@ -9,7 +9,7 @@ struct WorkspaceBarItem: Identifiable {
 }
 
 struct WorkspaceBarWindowItem: Identifiable {
-    let id: UUID
+    let id: WindowToken
     let windowId: Int
     let appName: String
     let icon: NSImage?
@@ -19,7 +19,7 @@ struct WorkspaceBarWindowItem: Identifiable {
 }
 
 struct WorkspaceBarWindowInfo: Identifiable {
-    let id: UUID
+    let id: WindowToken
     let windowId: Int
     let title: String
     let isFocused: Bool
@@ -58,7 +58,7 @@ struct WorkspaceBarView: View {
                     cornerRadius: cornerRadius,
                     showLabels: resolvedSettings.showLabels,
                     onFocusWorkspace: { focusWorkspace(item) },
-                    onFocusWindow: { windowId in focusWindow(windowId) }
+                    onFocusWindow: { token in focusWindow(token) }
                 )
             }
         }
@@ -84,8 +84,8 @@ struct WorkspaceBarView: View {
         controller.focusWorkspaceFromBar(named: item.name)
     }
 
-    private func focusWindow(_ windowId: Int) {
-        controller.focusWindowFromBar(windowId: windowId)
+    private func focusWindow(_ token: WindowToken) {
+        controller.focusWindowFromBar(token: token)
     }
 }
 
@@ -98,7 +98,7 @@ private struct WorkspaceItemView: View {
     let cornerRadius: CGFloat
     let showLabels: Bool
     let onFocusWorkspace: () -> Void
-    let onFocusWindow: (Int) -> Void
+    let onFocusWindow: (WindowToken) -> Void
 
     @State private var isHovered = false
 
@@ -157,7 +157,7 @@ private struct WindowIconView: View {
     let iconSize: CGFloat
     let isFocused: Bool
     let isInFocusedWorkspace: Bool
-    let onFocusWindow: (Int) -> Void
+    let onFocusWindow: (WindowToken) -> Void
 
     @State private var isHovered = false
     @State private var showingWindowList = false
@@ -201,15 +201,15 @@ private struct WindowIconView: View {
             if window.windowCount > 1 {
                 showingWindowList = true
             } else {
-                onFocusWindow(window.windowId)
+                onFocusWindow(window.id)
             }
         }
         .sheet(isPresented: $showingWindowList) {
             WindowListSheet(
                 windows: window.allWindows,
                 appName: window.appName,
-                onFocusWindow: { windowId in
-                    onFocusWindow(windowId)
+                onFocusWindow: { token in
+                    onFocusWindow(token)
                     showingWindowList = false
                 }
             )
@@ -250,7 +250,7 @@ private struct WindowIconView: View {
 private struct WindowListSheet: View {
     let windows: [WorkspaceBarWindowInfo]
     let appName: String
-    let onFocusWindow: (Int) -> Void
+    let onFocusWindow: (WindowToken) -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -272,7 +272,7 @@ private struct WindowListSheet: View {
 
             List(windows) { windowInfo in
                 Button {
-                    onFocusWindow(windowInfo.windowId)
+                    onFocusWindow(windowInfo.id)
                 } label: {
                     HStack {
                         Text(windowInfo.title)

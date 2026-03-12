@@ -395,4 +395,133 @@ private func lastAppliedBorderWindowId(on controller: WMController) -> Int? {
         #expect(relayoutReasons.isEmpty)
         #expect(lastAppliedBorderWindowId(on: controller) == nil)
     }
+
+    @Test @MainActor func destroyRemovesInactiveWorkspaceEntryImmediately() {
+        let controller = makeAXEventTestController()
+        guard let monitorId = controller.workspaceManager.monitors.first?.id,
+              let activeWorkspaceId = controller.activeWorkspace()?.id,
+              let inactiveWorkspaceId = controller.workspaceManager.workspaceId(for: "2", createIfMissing: true)
+        else {
+            Issue.record("Missing workspace setup")
+            return
+        }
+
+        let pid: pid_t = 9_101
+        _ = controller.workspaceManager.addWindow(
+            AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: 901),
+            pid: pid,
+            windowId: 901,
+            to: inactiveWorkspaceId
+        )
+        #expect(controller.workspaceManager.setActiveWorkspace(activeWorkspaceId, on: monitorId))
+
+        controller.axEventHandler.windowInfoProvider = { windowId in
+            WindowServerInfo(id: windowId, pid: pid, level: 0, frame: .zero)
+        }
+
+        controller.axEventHandler.cgsEventObserver(
+            CGSEventObserver.shared,
+            didReceive: .destroyed(windowId: 901, spaceId: 0)
+        )
+
+        #expect(controller.workspaceManager.entry(forPid: pid, windowId: 901) == nil)
+    }
+
+    @Test @MainActor func createAfterInactiveDestroyAllowsReusedWindowIdFromDifferentPid() {
+        let controller = makeAXEventTestController()
+        guard let monitorId = controller.workspaceManager.monitors.first?.id,
+              let activeWorkspaceId = controller.activeWorkspace()?.id,
+              let inactiveWorkspaceId = controller.workspaceManager.workspaceId(for: "2", createIfMissing: true)
+        else {
+            Issue.record("Missing workspace setup")
+            return
+        }
+
+        let originalPid: pid_t = 9_111
+        let refreshedPid: pid_t = 9_112
+        _ = controller.workspaceManager.addWindow(
+            AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: 902),
+            pid: originalPid,
+            windowId: 902,
+            to: inactiveWorkspaceId
+        )
+        #expect(controller.workspaceManager.setActiveWorkspace(activeWorkspaceId, on: monitorId))
+
+        controller.axEventHandler.windowInfoProvider = { windowId in
+            WindowServerInfo(id: windowId, pid: originalPid, level: 0, frame: .zero)
+        }
+        controller.axEventHandler.cgsEventObserver(
+            CGSEventObserver.shared,
+            didReceive: .destroyed(windowId: 902, spaceId: 0)
+        )
+        #expect(controller.workspaceManager.entry(forPid: originalPid, windowId: 902) == nil)
+
+        controller.axEventHandler.windowInfoProvider = { windowId in
+            WindowServerInfo(id: windowId, pid: refreshedPid, level: 0, frame: .zero)
+        }
+        controller.axEventHandler.axWindowRefProvider = { windowId, _ in
+            AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
+        }
+        controller.axEventHandler.windowTypeProvider = { _, _ in .tiling }
+
+        controller.axEventHandler.cgsEventObserver(
+            CGSEventObserver.shared,
+            didReceive: .created(windowId: 902, spaceId: 0)
+        )
+
+        #expect(controller.workspaceManager.entry(forPid: originalPid, windowId: 902) == nil)
+        #expect(controller.workspaceManager.entry(forPid: refreshedPid, windowId: 902) != nil)
+        #expect(controller.workspaceManager.allEntries().filter { $0.windowId == 902 }.count == 1)
+    }
+
+    @Test @MainActor func frameChangedUsesResolvedTokenWhenWindowIdsCollideAcrossPids() {
+        let controller = makeAXEventTestController()
+        guard let workspaceId = controller.activeWorkspace()?.id else {
+            Issue.record("Missing active workspace")
+            return
+        }
+
+        let stalePid: pid_t = 9_121
+        let focusedPid: pid_t = 9_122
+        _ = controller.workspaceManager.addWindow(
+            AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: 903),
+            pid: stalePid,
+            windowId: 903,
+            to: workspaceId
+        )
+        let focusedToken = controller.workspaceManager.addWindow(
+            AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: 903),
+            pid: focusedPid,
+            windowId: 903,
+            to: workspaceId
+        )
+        _ = controller.workspaceManager.setManagedFocus(
+            focusedToken,
+            in: workspaceId,
+            onMonitor: controller.workspaceManager.monitorId(for: workspaceId)
+        )
+
+        controller.axEventHandler.frameProvider = { _ in
+            CGRect(x: 40, y: 40, width: 500, height: 400)
+        }
+        controller.setBordersEnabled(true)
+
+        controller.axEventHandler.windowInfoProvider = { windowId in
+            WindowServerInfo(id: windowId, pid: stalePid, level: 0, frame: .zero)
+        }
+        controller.axEventHandler.cgsEventObserver(
+            CGSEventObserver.shared,
+            didReceive: .frameChanged(windowId: 903)
+        )
+        #expect(lastAppliedBorderWindowId(on: controller) == nil)
+
+        controller.axEventHandler.windowInfoProvider = { windowId in
+            WindowServerInfo(id: windowId, pid: focusedPid, level: 0, frame: .zero)
+        }
+        controller.axEventHandler.cgsEventObserver(
+            CGSEventObserver.shared,
+            didReceive: .frameChanged(windowId: 903)
+        )
+        #expect(lastAppliedBorderWindowId(on: controller) == 903)
+    }
 }

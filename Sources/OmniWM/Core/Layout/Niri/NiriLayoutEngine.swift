@@ -102,12 +102,12 @@ final class NiriLayoutEngine {
 
     var roots: [WorkspaceDescriptor.ID: NiriRoot] = [:]
 
-    var handleToNode: [WindowHandle: NiriWindow] = [:]
+    var tokenToNode: [WindowToken: NiriWindow] = [:]
 
-    var closingHandles: Set<WindowHandle> = []
+    var closingTokens: Set<WindowToken> = []
 
-    var framePool: [WindowHandle: CGRect] = [:]
-    var hiddenPool: [WindowHandle: HideSide] = [:]
+    var framePool: [WindowToken: CGRect] = [:]
+    var hiddenPool: [WindowToken: HideSide] = [:]
 
     var maxWindowsPerColumn: Int
     var maxVisibleColumns: Int
@@ -209,8 +209,12 @@ final class NiriLayoutEngine {
         return nil
     }
 
+    func findNode(for token: WindowToken) -> NiriWindow? {
+        tokenToNode[token]
+    }
+
     func findNode(for handle: WindowHandle) -> NiriWindow? {
-        handleToNode[handle]
+        findNode(for: handle.id)
     }
 
     func column(of node: NiriNode) -> NiriContainer? {

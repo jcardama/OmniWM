@@ -33,6 +33,25 @@ private func makeWorkspaceManagerTestWindow(windowId: Int = 101) -> AXWindowRef 
     AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: windowId)
 }
 
+@MainActor
+private func addWorkspaceManagerTestHandle(
+    manager: WorkspaceManager,
+    windowId: Int,
+    pid: pid_t = getpid(),
+    workspaceId: WorkspaceDescriptor.ID
+) -> WindowHandle {
+    let token = manager.addWindow(
+        makeWorkspaceManagerTestWindow(windowId: windowId),
+        pid: pid,
+        windowId: windowId,
+        to: workspaceId
+    )
+    guard let handle = manager.handle(for: token) else {
+        fatalError("Expected bridge handle for workspace manager test")
+    }
+    return handle
+}
+
 @Suite struct WorkspaceManagerTests {
     @Test @MainActor func equalDistanceRemapUsesDeterministicTieBreak() {
         let defaults = makeWorkspaceManagerTestDefaults()
@@ -178,12 +197,7 @@ private func makeWorkspaceManagerTestWindow(windowId: Int = 101) -> AXWindowRef 
         #expect(manager.setInteractionMonitor(left.id))
         #expect(manager.enterNonManagedFocus(appFullscreen: true))
 
-        let handle = manager.addWindow(
-            makeWorkspaceManagerTestWindow(windowId: 2101),
-            pid: getpid(),
-            windowId: 2101,
-            to: ws2
-        )
+        let handle = addWorkspaceManagerTestHandle(manager: manager, windowId: 2101, workspaceId: ws2)
 
         #expect(manager.beginManagedFocusRequest(handle, in: ws2, onMonitor: right.id))
         #expect(manager.pendingFocusedHandle == handle)
@@ -220,12 +234,7 @@ private func makeWorkspaceManagerTestWindow(windowId: Int = 101) -> AXWindowRef 
         #expect(manager.setInteractionMonitor(left.id))
         #expect(manager.enterNonManagedFocus(appFullscreen: true))
 
-        let handle = manager.addWindow(
-            makeWorkspaceManagerTestWindow(windowId: 2111),
-            pid: getpid(),
-            windowId: 2111,
-            to: ws2
-        )
+        let handle = addWorkspaceManagerTestHandle(manager: manager, windowId: 2111, workspaceId: ws2)
 
         #expect(manager.beginManagedFocusRequest(handle, in: ws2, onMonitor: right.id))
         #expect(manager.confirmManagedFocus(
@@ -263,18 +272,8 @@ private func makeWorkspaceManagerTestWindow(windowId: Int = 101) -> AXWindowRef 
 
         #expect(manager.setActiveWorkspace(workspaceId, on: monitor.id))
 
-        let confirmedHandle = manager.addWindow(
-            makeWorkspaceManagerTestWindow(windowId: 2121),
-            pid: getpid(),
-            windowId: 2121,
-            to: workspaceId
-        )
-        let pendingHandle = manager.addWindow(
-            makeWorkspaceManagerTestWindow(windowId: 2122),
-            pid: getpid(),
-            windowId: 2122,
-            to: workspaceId
-        )
+        let confirmedHandle = addWorkspaceManagerTestHandle(manager: manager, windowId: 2121, workspaceId: workspaceId)
+        let pendingHandle = addWorkspaceManagerTestHandle(manager: manager, windowId: 2122, workspaceId: workspaceId)
 
         #expect(manager.beginManagedFocusRequest(pendingHandle, in: workspaceId, onMonitor: monitor.id))
         #expect(manager.confirmManagedFocus(
@@ -289,6 +288,43 @@ private func makeWorkspaceManagerTestWindow(windowId: Int = 101) -> AXWindowRef 
         #expect(manager.focusedHandle == confirmedHandle)
         #expect(manager.lastFocusedHandle(in: workspaceId) == confirmedHandle)
         #expect(manager.preferredFocusHandle(in: workspaceId) == confirmedHandle)
+    }
+
+    @Test @MainActor func stableTokenFocusBridgeReusesHandleAcrossReupsert() {
+        let defaults = makeWorkspaceManagerTestDefaults()
+        let settings = SettingsStore(defaults: defaults)
+        settings.workspaceConfigurations = [
+            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true)
+        ]
+
+        let manager = WorkspaceManager(settings: settings)
+        let monitor = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Main", x: 0, y: 0)
+        manager.applyMonitorConfigurationChange([monitor])
+
+        guard let workspaceId = manager.workspaceId(for: "1", createIfMissing: true) else {
+            Issue.record("Failed to create workspace")
+            return
+        }
+
+        let token1 = manager.addWindow(makeWorkspaceManagerTestWindow(windowId: 2191), pid: getpid(), windowId: 2191, to: workspaceId)
+        guard let handle1 = manager.handle(for: token1) else {
+            Issue.record("Missing initial bridge handle")
+            return
+        }
+        _ = manager.setManagedFocus(token1, in: workspaceId, onMonitor: monitor.id)
+
+        let token2 = manager.addWindow(makeWorkspaceManagerTestWindow(windowId: 2191), pid: getpid(), windowId: 2191, to: workspaceId)
+        guard let handle2 = manager.handle(for: token2) else {
+            Issue.record("Missing refreshed bridge handle")
+            return
+        }
+
+        #expect(token1 == token2)
+        #expect(handle1 === handle2)
+        #expect(manager.focusedToken == token1)
+        #expect(manager.focusedHandle === handle1)
+        #expect(manager.lastFocusedToken(in: workspaceId) == token1)
+        #expect(manager.lastFocusedHandle(in: workspaceId) === handle1)
     }
 
     @Test @MainActor func resolveWorkspaceFocusIgnoresDeadRememberedHandles() {
@@ -307,18 +343,8 @@ private func makeWorkspaceManagerTestWindow(windowId: Int = 101) -> AXWindowRef 
             return
         }
 
-        let survivor = manager.addWindow(
-            makeWorkspaceManagerTestWindow(windowId: 2201),
-            pid: 2201,
-            windowId: 2201,
-            to: workspaceId
-        )
-        let removed = manager.addWindow(
-            makeWorkspaceManagerTestWindow(windowId: 2202),
-            pid: 2202,
-            windowId: 2202,
-            to: workspaceId
-        )
+        let survivor = addWorkspaceManagerTestHandle(manager: manager, windowId: 2201, pid: 2201, workspaceId: workspaceId)
+        let removed = addWorkspaceManagerTestHandle(manager: manager, windowId: 2202, pid: 2202, workspaceId: workspaceId)
 
         _ = manager.setManagedFocus(removed, in: workspaceId, onMonitor: monitor.id)
         _ = manager.removeWindow(pid: 2202, windowId: 2202)
@@ -346,18 +372,8 @@ private func makeWorkspaceManagerTestWindow(windowId: Int = 101) -> AXWindowRef 
             return
         }
 
-        let survivor = manager.addWindow(
-            makeWorkspaceManagerTestWindow(windowId: 2301),
-            pid: 2301,
-            windowId: 2301,
-            to: workspaceId
-        )
-        let removed = manager.addWindow(
-            makeWorkspaceManagerTestWindow(windowId: 2302),
-            pid: 2302,
-            windowId: 2302,
-            to: workspaceId
-        )
+        let survivor = addWorkspaceManagerTestHandle(manager: manager, windowId: 2301, pid: 2301, workspaceId: workspaceId)
+        let removed = addWorkspaceManagerTestHandle(manager: manager, windowId: 2302, pid: 2302, workspaceId: workspaceId)
 
         _ = manager.setManagedFocus(removed, in: workspaceId, onMonitor: monitor.id)
 
@@ -404,12 +420,7 @@ private func makeWorkspaceManagerTestWindow(windowId: Int = 101) -> AXWindowRef 
         #expect(manager.setActiveWorkspace(ws2, on: right.id))
         #expect(manager.setInteractionMonitor(left.id))
 
-        let handle = manager.addWindow(
-            makeWorkspaceManagerTestWindow(windowId: 2401),
-            pid: getpid(),
-            windowId: 2401,
-            to: ws2
-        )
+        let handle = addWorkspaceManagerTestHandle(manager: manager, windowId: 2401, workspaceId: ws2)
         #expect(manager.setManagedFocus(handle, in: ws2, onMonitor: right.id))
 
         let replacement = makeWorkspaceManagerTestMonitor(displayId: 30, name: "Replacement", x: -1920, y: 0)
@@ -439,18 +450,8 @@ private func makeWorkspaceManagerTestWindow(windowId: Int = 101) -> AXWindowRef 
         }
 
         let pid: pid_t = 3303
-        let handle1 = manager.addWindow(
-            makeWorkspaceManagerTestWindow(windowId: 3301),
-            pid: pid,
-            windowId: 3301,
-            to: ws1
-        )
-        let handle2 = manager.addWindow(
-            makeWorkspaceManagerTestWindow(windowId: 3302),
-            pid: pid,
-            windowId: 3302,
-            to: ws2
-        )
+        let handle1 = addWorkspaceManagerTestHandle(manager: manager, windowId: 3301, pid: pid, workspaceId: ws1)
+        let handle2 = addWorkspaceManagerTestHandle(manager: manager, windowId: 3302, pid: pid, workspaceId: ws2)
 
         _ = manager.rememberFocus(handle1, in: ws1)
         _ = manager.setManagedFocus(handle2, in: ws2, onMonitor: right.id)

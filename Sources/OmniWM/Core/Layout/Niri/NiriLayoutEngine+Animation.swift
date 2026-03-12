@@ -169,7 +169,7 @@ extension NiriLayoutEngine {
         state: ViewportState,
         workingArea: WorkingAreaContext? = nil,
         animationTime: TimeInterval? = nil
-    ) -> [WindowHandle: CGRect] {
+    ) -> [WindowToken: CGRect] {
         calculateCombinedLayoutWithVisibility(
             in: workspaceId,
             monitor: monitor,
@@ -216,7 +216,7 @@ extension NiriLayoutEngine {
         state: ViewportState,
         workingArea: WorkingAreaContext? = nil,
         animationTime: TimeInterval? = nil
-    ) -> (frames: [WindowHandle: CGRect], hiddenHandles: [WindowHandle: HideSide]) {
+    ) -> (frames: [WindowToken: CGRect], hiddenHandles: [WindowToken: HideSide]) {
         framePool.removeAll(keepingCapacity: true)
         hiddenPool.removeAll(keepingCapacity: true)
 
@@ -245,25 +245,25 @@ extension NiriLayoutEngine {
         return (framePool, hiddenPool)
     }
 
-    func captureWindowFrames(in workspaceId: WorkspaceDescriptor.ID) -> [WindowHandle: CGRect] {
+    func captureWindowFrames(in workspaceId: WorkspaceDescriptor.ID) -> [WindowToken: CGRect] {
         guard let root = root(for: workspaceId) else { return [:] }
-        var frames: [WindowHandle: CGRect] = [:]
+        var frames: [WindowToken: CGRect] = [:]
         for window in root.allWindows {
             if let frame = window.frame {
-                frames[window.handle] = frame
+                frames[window.token] = frame
             }
         }
         return frames
     }
 
     func targetFrameForWindow(
-        _ handle: WindowHandle,
+        _ token: WindowToken,
         in workspaceId: WorkspaceDescriptor.ID,
         state: ViewportState,
         workingFrame: CGRect,
         gaps: CGFloat
     ) -> CGRect? {
-        guard let windowNode = findNode(for: handle),
+        guard let windowNode = findNode(for: token),
               let column = windowNode.parent as? NiriContainer,
               let colIdx = columnIndex(of: column, in: workspaceId)
         else { return nil }
@@ -307,7 +307,7 @@ extension NiriLayoutEngine {
         let availableHeight = workingFrame.height
 
         let windowNodes = column.windowNodes
-        guard let windowIndex = windowNodes.firstIndex(where: { $0.handle == handle }) else { return nil }
+        guard let windowIndex = windowNodes.firstIndex(where: { $0.token == token }) else { return nil }
 
         let targetY: CGFloat
         let targetHeight: CGFloat
@@ -333,18 +333,28 @@ extension NiriLayoutEngine {
         )
     }
 
+    func targetFrameForWindow(
+        _ handle: WindowHandle,
+        in workspaceId: WorkspaceDescriptor.ID,
+        state: ViewportState,
+        workingFrame: CGRect,
+        gaps: CGFloat
+    ) -> CGRect? {
+        targetFrameForWindow(handle.id, in: workspaceId, state: state, workingFrame: workingFrame, gaps: gaps)
+    }
+
     func triggerMoveAnimations(
         in workspaceId: WorkspaceDescriptor.ID,
-        oldFrames: [WindowHandle: CGRect],
-        newFrames: [WindowHandle: CGRect],
+        oldFrames: [WindowToken: CGRect],
+        newFrames: [WindowToken: CGRect],
         threshold: CGFloat = 1.0
     ) -> Bool {
         guard let root = root(for: workspaceId) else { return false }
         var anyAnimationStarted = false
 
         for window in root.allWindows {
-            guard let oldFrame = oldFrames[window.handle],
-                  let newFrame = newFrames[window.handle]
+            guard let oldFrame = oldFrames[window.token],
+                  let newFrame = newFrames[window.token]
             else {
                 continue
             }

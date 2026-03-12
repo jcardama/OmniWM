@@ -157,7 +157,7 @@ final class ServiceLifecycleManager {
 
         controller.syncMonitorsToNiriEngine()
 
-        let focusedWsId = controller.workspaceManager.focusedHandle
+        let focusedWsId = controller.workspaceManager.focusedToken
             .flatMap { controller.workspaceManager.workspace(for: $0) }
         controller.workspaceManager.garbageCollectUnusedWorkspaces(focusedWorkspaceId: focusedWsId)
 
@@ -171,7 +171,7 @@ final class ServiceLifecycleManager {
             if let monitorId = controller.workspaceManager.monitorId(for: workspaceId),
                controller.workspaceManager.activeWorkspace(on: monitorId)?.id == workspaceId
             {
-                controller.ensureFocusedHandleValid(in: workspaceId)
+                controller.ensureFocusedTokenValid(in: workspaceId)
             }
         }
         controller.appInfoCache.evict(pid: pid)

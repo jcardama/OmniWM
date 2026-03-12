@@ -6,7 +6,7 @@ import Testing
 
 func makeTestHandle(pid: pid_t = 1) -> WindowHandle {
     WindowHandle(
-        id: UUID(),
+        id: WindowToken(pid: pid, windowId: Int.random(in: 1 ... 1_000_000)),
         pid: pid,
         axElement: AXUIElementCreateSystemWide()
     )
@@ -181,6 +181,27 @@ func makeTestMonitor(
         #expect(windowIds1 == windowIds2)
     }
 
+    @Test func syncWindowsKeepsStableNodeForReobservedToken() {
+        let engine = NiriLayoutEngine(maxWindowsPerColumn: 1)
+        let wsId = UUID()
+
+        let original = makeTestHandle(pid: 21)
+        let refreshed = WindowHandle(
+            id: original.id,
+            pid: original.pid,
+            axElement: AXUIElementCreateSystemWide()
+        )
+
+        engine.syncWindows([original], in: wsId, selectedNodeId: nil)
+        let originalNodeId = engine.findNode(for: original.id)?.id
+
+        engine.syncWindows([refreshed], in: wsId, selectedNodeId: nil)
+
+        #expect(engine.root(for: wsId)?.allWindows.count == 1)
+        #expect(engine.root(for: wsId)?.windowIdSet == Set([original.id]))
+        #expect(engine.findNode(for: refreshed.id)?.id == originalNodeId)
+    }
+
     @Test func ensureSelectionVisibleMovesViewport() {
         let engine = NiriLayoutEngine(maxWindowsPerColumn: 1)
         let wsId = UUID()
@@ -238,9 +259,9 @@ func makeTestMonitor(
         col1.appendChild(w2)
         col2.appendChild(w3)
 
-        engine.handleToNode[h1] = w1
-        engine.handleToNode[h2] = w2
-        engine.handleToNode[h3] = w3
+        engine.tokenToNode[h1.id] = w1
+        engine.tokenToNode[h2.id] = w2
+        engine.tokenToNode[h3.id] = w3
 
         col1.setActiveTileIdx(0)
         col2.setActiveTileIdx(0)
@@ -341,7 +362,7 @@ func makeTestMonitor(
         #expect(niriMonitor.workspaceSwitch?.fromWorkspaceId == ws1)
         #expect(niriMonitor.workspaceSwitch?.toWorkspaceId == ws2)
         #expect(niriMonitor.workspaceSwitch?.orderedWorkspaceIds == [ws1, ws2])
-        #expect(layout1.frames[handle1]?.minX == 0)
-        #expect((layout2.frames[handle2]?.minX ?? 0) > 0)
+        #expect(layout1.frames[handle1.id]?.minX == 0)
+        #expect((layout2.frames[handle2.id]?.minX ?? 0) > 0)
     }
 }

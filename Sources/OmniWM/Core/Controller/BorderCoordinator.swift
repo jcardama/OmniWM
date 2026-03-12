@@ -9,11 +9,11 @@ final class BorderCoordinator {
         self.controller = controller
     }
 
-    func updateBorderIfAllowed(handle: WindowHandle, frame: CGRect, windowId: Int) {
+    func updateBorderIfAllowed(token: WindowToken, frame: CGRect, windowId: Int) {
         guard let controller else { return }
 
         guard let activeWs = controller.activeWorkspace(),
-              controller.workspaceManager.workspace(for: handle) == activeWs.id
+              controller.workspaceManager.workspace(for: token) == activeWs.id
         else {
             controller.borderManager.hideBorder()
             return
@@ -28,11 +28,15 @@ final class BorderCoordinator {
             return
         }
 
-        if controller.workspaceManager.isAppFullscreenActive || isManagedWindowFullscreen(handle) {
+        if controller.workspaceManager.isAppFullscreenActive || isManagedWindowFullscreen(token) {
             controller.borderManager.hideBorder()
             return
         }
         controller.borderManager.updateFocusedWindow(frame: frame, windowId: windowId)
+    }
+
+    func updateBorderIfAllowed(handle: WindowHandle, frame: CGRect, windowId: Int) {
+        updateBorderIfAllowed(token: handle.id, frame: frame, windowId: windowId)
     }
 
     private func shouldDeferBorderUpdates(for workspaceId: WorkspaceDescriptor.ID) -> Bool {
@@ -57,10 +61,10 @@ final class BorderCoordinator {
         return false
     }
 
-    private func isManagedWindowFullscreen(_ handle: WindowHandle) -> Bool {
+    private func isManagedWindowFullscreen(_ token: WindowToken) -> Bool {
         guard let controller else { return false }
         guard let engine = controller.niriEngine,
-              let windowNode = engine.findNode(for: handle)
+              let windowNode = engine.findNode(for: token)
         else {
             return false
         }

@@ -534,7 +534,7 @@ class NiriContainer: NiriNode {
 }
 
 class NiriWindow: NiriNode {
-    let handle: WindowHandle
+    let token: WindowToken
 
     var sizingMode: SizingMode = .normal
 
@@ -561,8 +561,8 @@ class NiriWindow: NiriNode {
     var moveXAnimation: MoveAnimation?
     var moveYAnimation: MoveAnimation?
 
-    init(handle: WindowHandle) {
-        self.handle = handle
+    init(token: WindowToken) {
+        self.token = token
         super.init()
     }
 
@@ -596,9 +596,7 @@ class NiriWindow: NiriNode {
         sizingMode == .fullscreen
     }
 
-    var windowId: UUID {
-        handle.id
-    }
+    var handle: WindowHandle { WindowHandle(id: token) }
 
     func renderOffset(at time: TimeInterval = CACurrentMediaTime()) -> CGPoint {
         var offset = CGPoint.zero
@@ -687,7 +685,7 @@ class NiriRoot: NiriContainer {
     private var nodeIndex: [NodeId: NiriNode]?
     private var _cachedColumns: [NiriContainer]?
     private var _cachedAllWindows: [NiriWindow]?
-    private var _cachedWindowIdSet: Set<UUID>?
+    private var _cachedWindowIdSet: Set<WindowToken>?
 
     init(workspaceId: WorkspaceDescriptor.ID) {
         self.workspaceId = workspaceId
@@ -715,14 +713,14 @@ class NiriRoot: NiriContainer {
         return result
     }
 
-    var windowIdSet: Set<UUID> {
+    var windowIdSet: Set<WindowToken> {
         if let cached = _cachedWindowIdSet { return cached }
-        let result = Set(allWindows.map(\.handle.id))
+        let result = Set(allWindows.map(\.token))
         _cachedWindowIdSet = result
         return result
     }
 
-    func containsWindowId(_ id: UUID) -> Bool {
+    func containsWindowId(_ id: WindowToken) -> Bool {
         windowIdSet.contains(id)
     }
 

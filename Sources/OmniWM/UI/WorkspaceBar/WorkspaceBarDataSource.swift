@@ -16,7 +16,7 @@ enum WorkspaceBarDataSource {
         workspaceManager: WorkspaceManager,
         appInfoCache: AppInfoCache,
         niriEngine: NiriLayoutEngine?,
-        focusedHandle: WindowHandle?,
+        focusedToken: WindowToken?,
         settings: SettingsStore
     ) -> [WorkspaceBarItem] {
         var workspaces = workspaceManager.workspaces(on: monitor.id)
@@ -37,13 +37,13 @@ enum WorkspaceBarDataSource {
                     entries: orderedEntries,
                     useLayoutOrder: useLayoutOrder,
                     appInfoCache: appInfoCache,
-                    focusedHandle: focusedHandle
+                    focusedToken: focusedToken
                 )
             } else {
                 createIndividualWindowItems(
                     entries: orderedEntries,
                     appInfoCache: appInfoCache,
-                    focusedHandle: focusedHandle
+                    focusedToken: focusedToken
                 )
             }
 
@@ -59,15 +59,15 @@ enum WorkspaceBarDataSource {
     private static func orderMap(
         for workspaceId: WorkspaceDescriptor.ID,
         engine: NiriLayoutEngine?
-    ) -> [WindowHandle: SortKey]? {
+    ) -> [WindowToken: SortKey]? {
         guard let engine else { return nil }
 
-        var order: [WindowHandle: SortKey] = [:]
+        var order: [WindowToken: SortKey] = [:]
         let columns = engine.columns(in: workspaceId)
 
         for (colIdx, column) in columns.enumerated() {
             for (rowIdx, window) in column.windowNodes.enumerated() {
-                order[window.handle] = SortKey(group: 0, primary: colIdx, secondary: rowIdx)
+                order[window.handle.id] = SortKey(group: 0, primary: colIdx, secondary: rowIdx)
             }
         }
 
@@ -76,22 +76,22 @@ enum WorkspaceBarDataSource {
 
     private static func sortEntries(
         _ entries: [WindowModel.Entry],
-        orderMap: [WindowHandle: SortKey]?
+        orderMap: [WindowToken: SortKey]?
     ) -> [WindowModel.Entry] {
         guard let orderMap else { return entries }
         let fallbackOrder = Dictionary(uniqueKeysWithValues: entries.enumerated()
-            .map { ($0.element.handle, $0.offset) })
+            .map { ($0.element.handle.id, $0.offset) })
 
         return entries.sorted { lhs, rhs in
-            let lhsKey = orderMap[lhs.handle] ?? SortKey(group: 2, primary: Int.max, secondary: Int.max)
-            let rhsKey = orderMap[rhs.handle] ?? SortKey(group: 2, primary: Int.max, secondary: Int.max)
+            let lhsKey = orderMap[lhs.handle.id] ?? SortKey(group: 2, primary: Int.max, secondary: Int.max)
+            let rhsKey = orderMap[rhs.handle.id] ?? SortKey(group: 2, primary: Int.max, secondary: Int.max)
 
             if lhsKey.group != rhsKey.group { return lhsKey.group < rhsKey.group }
             if lhsKey.primary != rhsKey.primary { return lhsKey.primary < rhsKey.primary }
             if lhsKey.secondary != rhsKey.secondary { return lhsKey.secondary < rhsKey.secondary }
 
-            let lhsFallback = fallbackOrder[lhs.handle] ?? 0
-            let rhsFallback = fallbackOrder[rhs.handle] ?? 0
+            let lhsFallback = fallbackOrder[lhs.handle.id] ?? 0
+            let rhsFallback = fallbackOrder[rhs.handle.id] ?? 0
             return lhsFallback < rhsFallback
         }
     }
@@ -100,7 +100,7 @@ enum WorkspaceBarDataSource {
         entries: [WindowModel.Entry],
         useLayoutOrder: Bool,
         appInfoCache: AppInfoCache,
-        focusedHandle: WindowHandle?
+        focusedToken: WindowToken?
     ) -> [WorkspaceBarWindowItem] {
         if useLayoutOrder {
             var groupedByApp: [String: [WindowModel.Entry]] = [:]
@@ -117,17 +117,17 @@ enum WorkspaceBarDataSource {
                 groupedByApp[appName]?.append(entry)
             }
 
-            return orderedAppNames.compactMap { appName in
+            return orderedAppNames.compactMap { appName -> WorkspaceBarWindowItem? in
                 guard let appEntries = groupedByApp[appName], let firstEntry = appEntries.first else { return nil }
                 let appInfo = appInfoCache.info(for: firstEntry.handle.pid)
-                let anyFocused = appEntries.contains { $0.handle.id == focusedHandle?.id }
+                let anyFocused = appEntries.contains { $0.handle.id == focusedToken }
 
                 let windowInfos = appEntries.map { entry -> WorkspaceBarWindowInfo in
                     WorkspaceBarWindowInfo(
                         id: entry.handle.id,
                         windowId: entry.windowId,
                         title: windowTitle(for: entry) ?? appName,
-                        isFocused: entry.handle.id == focusedHandle?.id
+                        isFocused: entry.handle.id == focusedToken
                     )
                 }
 
@@ -150,14 +150,14 @@ enum WorkspaceBarDataSource {
         return groupedByApp.map { appName, appEntries -> WorkspaceBarWindowItem in
             let firstEntry = appEntries.first!
             let appInfo = appInfoCache.info(for: firstEntry.handle.pid)
-            let anyFocused = appEntries.contains { $0.handle.id == focusedHandle?.id }
+            let anyFocused = appEntries.contains { $0.handle.id == focusedToken }
 
             let windowInfos = appEntries.map { entry -> WorkspaceBarWindowInfo in
                 WorkspaceBarWindowInfo(
                     id: entry.handle.id,
                     windowId: entry.windowId,
                     title: windowTitle(for: entry) ?? appName,
-                    isFocused: entry.handle.id == focusedHandle?.id
+                    isFocused: entry.handle.id == focusedToken
                 )
             }
 
@@ -176,7 +176,7 @@ enum WorkspaceBarDataSource {
     private static func createIndividualWindowItems(
         entries: [WindowModel.Entry],
         appInfoCache: AppInfoCache,
-        focusedHandle: WindowHandle?
+        focusedToken: WindowToken?
     ) -> [WorkspaceBarWindowItem] {
         entries.map { entry in
             let appInfo = appInfoCache.info(for: entry.handle.pid)
@@ -188,14 +188,14 @@ enum WorkspaceBarDataSource {
                 windowId: entry.windowId,
                 appName: appName,
                 icon: appInfo?.icon,
-                isFocused: entry.handle.id == focusedHandle?.id,
+                isFocused: entry.handle.id == focusedToken,
                 windowCount: 1,
                 allWindows: [
                     WorkspaceBarWindowInfo(
                         id: entry.handle.id,
                         windowId: entry.windowId,
                         title: title,
-                        isFocused: entry.handle.id == focusedHandle?.id
+                        isFocused: entry.handle.id == focusedToken
                     )
                 ]
             )

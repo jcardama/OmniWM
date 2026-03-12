@@ -196,10 +196,10 @@ final class WMController {
         if hiddenAppPIDs.contains(handle.pid) {
             return false
         }
-        if workspaceManager.layoutReason(for: handle) != .standard {
+        if workspaceManager.layoutReason(for: handle.id) != .standard {
             return false
         }
-        return !workspaceManager.isHiddenInCorner(handle)
+        return !workspaceManager.isHiddenInCorner(handle.id)
     }
 
     func updateWorkspaceBarSettings() {
@@ -241,7 +241,7 @@ final class WMController {
             workspaceManager: workspaceManager,
             appInfoCache: appInfoCache,
             niriEngine: niriEngine,
-            focusedHandle: workspaceManager.focusedHandle,
+            focusedToken: workspaceManager.focusedToken,
             settings: settings
         )
     }
@@ -250,8 +250,8 @@ final class WMController {
         windowActionHandler.focusWorkspaceFromBar(named: name)
     }
 
-    func focusWindowFromBar(windowId: Int) {
-        windowActionHandler.focusWindowFromBar(windowId: windowId)
+    func focusWindowFromBar(token: WindowToken) {
+        windowActionHandler.focusWindowFromBar(token: token)
     }
 
     func setFocusFollowsMouse(_ enabled: Bool) {
@@ -387,8 +387,8 @@ final class WMController {
         {
             return monitor
         }
-        if let focused = workspaceManager.focusedHandle,
-           let workspaceId = workspaceManager.workspace(for: focused),
+        if let focusedToken = workspaceManager.focusedToken,
+           let workspaceId = workspaceManager.workspace(for: focusedToken),
            let monitor = workspaceManager.monitor(for: workspaceId)
         {
             return monitor
@@ -452,8 +452,8 @@ final class WMController {
     func isOverviewOpen() -> Bool { windowActionHandler.isOverviewOpen() }
 
     @discardableResult
-    func resolveAndSetWorkspaceFocus(for workspaceId: WorkspaceDescriptor.ID) -> WindowHandle? {
-        workspaceManager.resolveAndSetWorkspaceFocus(
+    func resolveAndSetWorkspaceFocusToken(for workspaceId: WorkspaceDescriptor.ID) -> WindowToken? {
+        workspaceManager.resolveAndSetWorkspaceFocusToken(
             in: workspaceId,
             onMonitor: workspaceManager.monitorId(for: workspaceId)
         )
@@ -471,36 +471,36 @@ final class WMController {
         {
             _ = workspaceManager.syncWorkspaceSelection(
                 nodeId: node.id,
-                focusedHandle: node.handle,
+                focusedToken: node.token,
                 in: workspaceId,
                 onMonitor: monitorId
             )
             return
         }
 
-        _ = workspaceManager.resolveAndSetWorkspaceFocus(in: workspaceId, onMonitor: monitorId)
+        _ = workspaceManager.resolveAndSetWorkspaceFocusToken(in: workspaceId, onMonitor: monitorId)
     }
 
-    func ensureFocusedHandleValid(in workspaceId: WorkspaceDescriptor.ID) {
-        if let focused = workspaceManager.focusedHandle,
-           workspaceManager.entry(for: focused)?.workspaceId == workspaceId
+    func ensureFocusedTokenValid(in workspaceId: WorkspaceDescriptor.ID) {
+        if let focusedToken = workspaceManager.focusedToken,
+           workspaceManager.entry(for: focusedToken)?.workspaceId == workspaceId
         {
             if let engine = niriEngine,
-               let node = engine.findNode(for: focused)
+               let node = engine.findNode(for: focusedToken)
             {
                 _ = workspaceManager.syncWorkspaceSelection(
                     nodeId: node.id,
-                    focusedHandle: focused,
+                    focusedToken: focusedToken,
                     in: workspaceId,
                     onMonitor: workspaceManager.monitorId(for: workspaceId)
                 )
             } else {
-                _ = workspaceManager.rememberFocus(focused, in: workspaceId)
+                _ = workspaceManager.rememberFocus(focusedToken, in: workspaceId)
             }
             return
         }
 
-        guard let nextFocus = workspaceManager.resolveAndSetWorkspaceFocus(
+        guard let nextFocusToken = workspaceManager.resolveAndSetWorkspaceFocusToken(
             in: workspaceId,
             onMonitor: workspaceManager.monitorId(for: workspaceId)
         ) else {
@@ -508,19 +508,23 @@ final class WMController {
         }
 
         if let engine = niriEngine,
-           let node = engine.findNode(for: nextFocus)
+           let node = engine.findNode(for: nextFocusToken)
         {
             _ = workspaceManager.syncWorkspaceSelection(
                 nodeId: node.id,
-                focusedHandle: nextFocus,
+                focusedToken: nextFocusToken,
                 in: workspaceId
             )
         }
-        focusWindow(nextFocus)
+        focusWindow(nextFocusToken)
     }
 
     func moveMouseToWindow(_ handle: WindowHandle) {
-        guard let entry = workspaceManager.entry(for: handle) else { return }
+        moveMouseToWindow(handle.id)
+    }
+
+    func moveMouseToWindow(_ token: WindowToken) {
+        guard let entry = workspaceManager.entry(for: token) else { return }
         guard let frame = AXWindowService.framePreferFast(entry.axRef) else { return }
 
         let center = frame.center
@@ -558,23 +562,23 @@ extension WMController {
         return false
     }
 
-    func focusWindow(_ handle: WindowHandle) {
-        guard let entry = workspaceManager.entry(for: handle) else { return }
+    func focusWindow(_ token: WindowToken) {
+        guard let entry = workspaceManager.entry(for: token) else { return }
         guard !(isFrontmostAppLockScreen() || isLockScreenActive) else { return }
 
         _ = workspaceManager.beginManagedFocusRequest(
-            handle,
+            token,
             in: entry.workspaceId,
             onMonitor: workspaceManager.monitorId(for: entry.workspaceId)
         )
 
         let axRef = entry.axRef
-        let pid = handle.pid
+        let pid = entry.pid
         let windowId = entry.windowId
         let moveMouseEnabled = moveMouseToFocusedWindowEnabled
 
         focusCoordinator.focusWindow(
-            handle,
+            token,
             performFocus: {
                 // 1. Activate app first (brings process to front, may pick wrong key window)
                 self.windowFocusOperations.activateApp(pid)
@@ -586,17 +590,17 @@ extension WMController {
                 self.windowFocusOperations.raiseWindow(axRef.element)
 
                 if moveMouseEnabled {
-                    self.moveMouseToWindow(handle)
+                    self.moveMouseToWindow(token)
                 }
 
-                if let entry = self.workspaceManager.entry(for: handle) {
+                if let entry = self.workspaceManager.entry(for: token) {
                     if let engine = self.niriEngine,
-                       let node = engine.findNode(for: handle),
+                       let node = engine.findNode(for: token),
                        let frame = node.frame
                     {
-                        self.borderCoordinator.updateBorderIfAllowed(handle: entry.handle, frame: frame, windowId: entry.windowId)
+                        self.borderCoordinator.updateBorderIfAllowed(token: token, frame: frame, windowId: entry.windowId)
                     } else if let frame = try? AXWindowService.frame(entry.axRef) {
-                        self.borderCoordinator.updateBorderIfAllowed(handle: entry.handle, frame: frame, windowId: entry.windowId)
+                        self.borderCoordinator.updateBorderIfAllowed(token: token, frame: frame, windowId: entry.windowId)
                     }
                 }
             },
@@ -605,6 +609,10 @@ extension WMController {
                 self.focusWindow(deferred)
             }
         )
+    }
+
+    func focusWindow(_ handle: WindowHandle) {
+        focusWindow(handle.id)
     }
 
     var isDiscoveryInProgress: Bool {

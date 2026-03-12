@@ -42,19 +42,19 @@ import QuartzCore
 
         var frameUpdates: [(pid: pid_t, windowId: Int, frame: CGRect)] = []
 
-        for (handle, frame) in animatedFrames {
-            if let entry = controller.workspaceManager.entry(for: handle) {
-                frameUpdates.append((handle.pid, entry.windowId, frame))
+        for (token, frame) in animatedFrames {
+            if let entry = controller.workspaceManager.entry(for: token) {
+                frameUpdates.append((entry.pid, entry.windowId, frame))
             }
         }
 
         controller.axManager.applyFramesParallel(frameUpdates)
 
         if !engine.hasActiveAnimations(in: wsId, at: targetTime) {
-            if let focusedHandle = controller.workspaceManager.focusedHandle,
-               let frame = animatedFrames[focusedHandle],
-               let entry = controller.workspaceManager.entry(for: focusedHandle) {
-                controller.borderCoordinator.updateBorderIfAllowed(handle: focusedHandle, frame: frame, windowId: entry.windowId)
+            if let focusedToken = controller.workspaceManager.focusedToken,
+               let frame = animatedFrames[focusedToken],
+               let entry = controller.workspaceManager.entry(for: focusedToken) {
+                controller.borderCoordinator.updateBorderIfAllowed(token: focusedToken, frame: frame, windowId: entry.windowId)
             }
             controller.layoutRefreshController.stopDwindleAnimation(for: displayId)
         }
@@ -76,10 +76,10 @@ import QuartzCore
 
             let oldFrames = engine.currentFrames(in: wsId)
 
-            let windowHandles = controller.workspaceManager.entries(in: wsId).map(\.handle)
-            let currentFocusedHandle = controller.workspaceManager.preferredFocusHandle(in: wsId)
+            let windowTokens = controller.workspaceManager.entries(in: wsId).map(\.token)
+            let currentFocusedToken = controller.workspaceManager.preferredFocusToken(in: wsId)
 
-            _ = engine.syncWindows(windowHandles, in: wsId, focusedHandle: currentFocusedHandle)
+            _ = engine.syncWindows(windowTokens, in: wsId, focusedToken: currentFocusedToken)
 
             lrc.updateWindowConstraints(in: wsId) { engine.updateWindowConstraints(for: $0, constraints: $1) }
 
@@ -88,7 +88,7 @@ import QuartzCore
             let newFrames = engine.calculateLayout(for: wsId, screen: insetFrame)
 
             for entry in controller.workspaceManager.entries(in: wsId) {
-                if newFrames[entry.handle] != nil {
+                if newFrames[entry.token] != nil {
                     lrc.unhideWindow(entry, monitor: monitor)
                 }
             }
@@ -109,26 +109,26 @@ import QuartzCore
             if engine.hasActiveAnimations(in: wsId, at: now) {
                 lrc.startDwindleAnimation(for: wsId, monitor: monitor)
 
-                if let focusedHandle = controller.workspaceManager.focusedHandle,
-                   let frame = newFrames[focusedHandle],
-                   let entry = controller.workspaceManager.entry(for: focusedHandle) {
+                if let focusedToken = controller.workspaceManager.focusedToken,
+                   let frame = newFrames[focusedToken],
+                   let entry = controller.workspaceManager.entry(for: focusedToken) {
                     controller.borderManager.updateFocusedWindow(frame: frame, windowId: entry.windowId)
                 }
             } else {
                 var frameUpdates: [(pid: pid_t, windowId: Int, frame: CGRect)] = []
 
-                for (handle, frame) in newFrames {
-                    if let entry = controller.workspaceManager.entry(for: handle) {
-                        frameUpdates.append((handle.pid, entry.windowId, frame))
+                for (token, frame) in newFrames {
+                    if let entry = controller.workspaceManager.entry(for: token) {
+                        frameUpdates.append((entry.pid, entry.windowId, frame))
                     }
                 }
 
                 controller.axManager.applyFramesParallel(frameUpdates)
 
-                if let focusedHandle = controller.workspaceManager.focusedHandle,
-                   let frame = newFrames[focusedHandle],
-                   let entry = controller.workspaceManager.entry(for: focusedHandle) {
-                    controller.borderCoordinator.updateBorderIfAllowed(handle: focusedHandle, frame: frame, windowId: entry.windowId)
+                if let focusedToken = controller.workspaceManager.focusedToken,
+                   let frame = newFrames[focusedToken],
+                   let entry = controller.workspaceManager.entry(for: focusedToken) {
+                    controller.borderCoordinator.updateBorderIfAllowed(token: focusedToken, frame: frame, windowId: entry.windowId)
                 }
             }
 
@@ -143,15 +143,15 @@ import QuartzCore
     func focusNeighbor(direction: Direction) {
         guard let controller else { return }
         withDwindleContext { engine, wsId in
-            if let handle = engine.moveFocus(direction: direction, in: wsId) {
+            if let token = engine.moveFocus(direction: direction, in: wsId) {
                 _ = controller.workspaceManager.rememberFocus(
-                    handle,
+                    token,
                     in: wsId
                 )
                 controller.layoutRefreshController.requestImmediateRelayout(
                     reason: .layoutCommand
                 ) { [weak controller] in
-                    controller?.focusWindow(handle)
+                    controller?.focusWindow(token)
                 }
             }
         }
@@ -169,9 +169,9 @@ import QuartzCore
     func toggleFullscreen() {
         guard let controller else { return }
         withDwindleContext { engine, wsId in
-            if let handle = engine.toggleFullscreen(in: wsId) {
+            if let token = engine.toggleFullscreen(in: wsId) {
                 _ = controller.workspaceManager.rememberFocus(
-                    handle,
+                    token,
                     in: wsId
                 )
                 controller.layoutRefreshController.requestImmediateRelayout(reason: .layoutCommand)

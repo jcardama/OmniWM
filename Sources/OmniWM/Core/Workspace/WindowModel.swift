@@ -2,6 +2,8 @@ import CoreGraphics
 import Foundation
 
 final class WindowModel {
+    typealias WindowKey = WindowToken
+
     struct HiddenState {
         let proportionalPosition: CGPoint
         let referenceMonitorId: Monitor.ID?
@@ -12,154 +14,148 @@ final class WindowModel {
         let handle: WindowHandle
         var axRef: AXWindowRef
         var workspaceId: WorkspaceDescriptor.ID
-        let windowId: Int
         var hiddenProportionalPosition: CGPoint?
         var hiddenReferenceMonitorId: Monitor.ID?
         var hiddenByWorkspaceInactivity: Bool = false
 
         var layoutReason: LayoutReason = .standard
-
         var parentKind: ParentKind = .tilingContainer
-
         var prevParentKind: ParentKind?
-
         var cachedConstraints: WindowSizeConstraints?
         var constraintsCacheTime: Date?
+
+        var token: WindowToken { handle.id }
+        var pid: pid_t { token.pid }
+        var windowId: Int { token.windowId }
 
         init(
             handle: WindowHandle,
             axRef: AXWindowRef,
             workspaceId: WorkspaceDescriptor.ID,
-            windowId: Int,
             hiddenProportionalPosition: CGPoint?
         ) {
             self.handle = handle
             self.axRef = axRef
             self.workspaceId = workspaceId
-            self.windowId = windowId
             self.hiddenProportionalPosition = hiddenProportionalPosition
         }
     }
 
-    private(set) var entries: [WindowHandle: Entry] = [:]
-    private var keyToHandle: [WindowKey: WindowHandle] = [:]
-    private var handlesByWorkspace: [WorkspaceDescriptor.ID: [WindowHandle]] = [:]
-    private var handleIndexByWorkspace: [WorkspaceDescriptor.ID: [WindowHandle: Int]] = [:]
-    private var windowIdToHandle: [Int: WindowHandle] = [:]
-    private var missingDetectionCountByKey: [WindowKey: Int] = [:]
+    private(set) var entries: [WindowToken: Entry] = [:]
+    private var tokensByWorkspace: [WorkspaceDescriptor.ID: [WindowToken]] = [:]
+    private var tokenIndexByWorkspace: [WorkspaceDescriptor.ID: [WindowToken: Int]] = [:]
+    private var missingDetectionCountByToken: [WindowToken: Int] = [:]
 
-    struct WindowKey: Hashable {
-        let pid: pid_t
-        let windowId: Int
+    private func appendToken(_ token: WindowToken, to workspace: WorkspaceDescriptor.ID) {
+        var tokens = tokensByWorkspace[workspace, default: []]
+        var indexByToken = tokenIndexByWorkspace[workspace, default: [:]]
+        guard indexByToken[token] == nil else { return }
+        indexByToken[token] = tokens.count
+        tokens.append(token)
+        tokensByWorkspace[workspace] = tokens
+        tokenIndexByWorkspace[workspace] = indexByToken
     }
 
-    private func appendHandle(_ handle: WindowHandle, to workspace: WorkspaceDescriptor.ID) {
-        var handles = handlesByWorkspace[workspace, default: []]
-        var indexByHandle = handleIndexByWorkspace[workspace, default: [:]]
-        guard indexByHandle[handle] == nil else { return }
-        indexByHandle[handle] = handles.count
-        handles.append(handle)
-        handlesByWorkspace[workspace] = handles
-        handleIndexByWorkspace[workspace] = indexByHandle
-    }
+    private func removeToken(_ token: WindowToken, from workspace: WorkspaceDescriptor.ID) {
+        guard var tokens = tokensByWorkspace[workspace],
+              var indexByToken = tokenIndexByWorkspace[workspace],
+              let index = indexByToken[token] else { return }
 
-    private func removeHandle(_ handle: WindowHandle, from workspace: WorkspaceDescriptor.ID) {
-        guard var handles = handlesByWorkspace[workspace],
-              var indexByHandle = handleIndexByWorkspace[workspace],
-              let index = indexByHandle[handle] else { return }
+        tokens.remove(at: index)
+        indexByToken.removeValue(forKey: token)
 
-        handles.remove(at: index)
-        indexByHandle.removeValue(forKey: handle)
-
-        if index < handles.count {
-            for i in index ..< handles.count {
-                indexByHandle[handles[i]] = i
+        if index < tokens.count {
+            for i in index ..< tokens.count {
+                indexByToken[tokens[i]] = i
             }
         }
 
-        if handles.isEmpty {
-            handlesByWorkspace.removeValue(forKey: workspace)
-            handleIndexByWorkspace.removeValue(forKey: workspace)
+        if tokens.isEmpty {
+            tokensByWorkspace.removeValue(forKey: workspace)
+            tokenIndexByWorkspace.removeValue(forKey: workspace)
         } else {
-            handlesByWorkspace[workspace] = handles
-            handleIndexByWorkspace[workspace] = indexByHandle
+            tokensByWorkspace[workspace] = tokens
+            tokenIndexByWorkspace[workspace] = indexByToken
         }
     }
 
-    func upsert(window: AXWindowRef, pid: pid_t, windowId: Int, workspace: WorkspaceDescriptor.ID) -> WindowHandle {
-        let key = WindowKey(pid: pid, windowId: windowId)
-        if let handle = keyToHandle[key] {
-            entries[handle]?.axRef = window
-            missingDetectionCountByKey.removeValue(forKey: key)
-            return handle
-        } else {
-            let handle = WindowHandle(id: UUID(), pid: pid, axElement: window.element)
-            let entry = Entry(
-                handle: handle,
-                axRef: window,
-                workspaceId: workspace,
-                windowId: windowId,
-                hiddenProportionalPosition: nil
-            )
-            entries[handle] = entry
-            keyToHandle[key] = handle
-            appendHandle(handle, to: workspace)
-            windowIdToHandle[windowId] = handle
-            missingDetectionCountByKey.removeValue(forKey: key)
-            return handle
+    @discardableResult
+    func upsert(window: AXWindowRef, pid: pid_t, windowId: Int, workspace: WorkspaceDescriptor.ID) -> WindowToken {
+        let token = WindowToken(pid: pid, windowId: windowId)
+        if let entry = entries[token] {
+            entry.axRef = window
+            updateWorkspace(for: token, workspace: workspace)
+            missingDetectionCountByToken.removeValue(forKey: token)
+            return token
         }
+
+        let handle = WindowHandle(id: token)
+        let entry = Entry(
+            handle: handle,
+            axRef: window,
+            workspaceId: workspace,
+            hiddenProportionalPosition: nil
+        )
+        entries[token] = entry
+        appendToken(token, to: workspace)
+        missingDetectionCountByToken.removeValue(forKey: token)
+        return token
     }
 
-    func updateWorkspace(for handle: WindowHandle, workspace: WorkspaceDescriptor.ID) {
-        guard let oldWorkspace = entries[handle]?.workspaceId else { return }
+    func handle(for token: WindowToken) -> WindowHandle? {
+        entries[token]?.handle
+    }
+
+    func updateWorkspace(for token: WindowToken, workspace: WorkspaceDescriptor.ID) {
+        guard let oldWorkspace = entries[token]?.workspaceId else { return }
         if oldWorkspace != workspace {
-            removeHandle(handle, from: oldWorkspace)
-            appendHandle(handle, to: workspace)
+            removeToken(token, from: oldWorkspace)
+            appendToken(token, to: workspace)
         }
-        entries[handle]?.workspaceId = workspace
+        entries[token]?.workspaceId = workspace
     }
 
     func windows(in workspace: WorkspaceDescriptor.ID) -> [Entry] {
-        guard let handles = handlesByWorkspace[workspace] else { return [] }
-        return handles.compactMap { entries[$0] }
+        guard let tokens = tokensByWorkspace[workspace] else { return [] }
+        return tokens.compactMap { entries[$0] }
     }
 
-    func workspace(for handle: WindowHandle) -> WorkspaceDescriptor.ID? {
-        entries[handle]?.workspaceId
+    func workspace(for token: WindowToken) -> WorkspaceDescriptor.ID? {
+        entries[token]?.workspaceId
+    }
+
+    func entry(for token: WindowToken) -> Entry? {
+        entries[token]
     }
 
     func entry(for handle: WindowHandle) -> Entry? {
-        entries[handle]
+        entry(for: handle.id)
     }
 
     func entry(forPid pid: pid_t, windowId: Int) -> Entry? {
-        let key = WindowKey(pid: pid, windowId: windowId)
-        guard let handle = keyToHandle[key] else { return nil }
-        return entries[handle]
+        entry(for: WindowToken(pid: pid, windowId: windowId))
     }
 
     func entries(forPid pid: pid_t) -> [Entry] {
-        entries.values.filter { $0.handle.pid == pid }
+        entries.values.filter { $0.pid == pid }
     }
 
     func entry(forWindowId windowId: Int) -> Entry? {
-        guard let handle = windowIdToHandle[windowId] else { return nil }
-        return entries[handle]
+        entries.values.first { $0.windowId == windowId }
     }
 
     func entry(forWindowId windowId: Int, inVisibleWorkspaces visibleIds: Set<WorkspaceDescriptor.ID>) -> Entry? {
-        guard let handle = windowIdToHandle[windowId] else { return nil }
-        guard let entry = entries[handle] else { return nil }
-        guard visibleIds.contains(entry.workspaceId) else { return nil }
-        return entry
+        entries.values.first { entry in
+            entry.windowId == windowId && visibleIds.contains(entry.workspaceId)
+        }
     }
 
     func allEntries() -> [Entry] {
         Array(entries.values)
     }
 
-    func setHiddenState(_ state: HiddenState?, for handle: WindowHandle) {
-        guard let entry = entries[handle] else { return }
+    func setHiddenState(_ state: HiddenState?, for token: WindowToken) {
+        guard let entry = entries[token] else { return }
         if let state {
             entry.hiddenProportionalPosition = state.proportionalPosition
             entry.hiddenReferenceMonitorId = state.referenceMonitorId
@@ -171,8 +167,8 @@ final class WindowModel {
         }
     }
 
-    func hiddenState(for handle: WindowHandle) -> HiddenState? {
-        guard let entry = entries[handle],
+    func hiddenState(for token: WindowToken) -> HiddenState? {
+        guard let entry = entries[token],
               let proportionalPosition = entry.hiddenProportionalPosition else { return nil }
         return HiddenState(
             proportionalPosition: proportionalPosition,
@@ -181,24 +177,24 @@ final class WindowModel {
         )
     }
 
-    func isHiddenInCorner(_ handle: WindowHandle) -> Bool {
-        entries[handle]?.hiddenProportionalPosition != nil
+    func isHiddenInCorner(_ token: WindowToken) -> Bool {
+        entries[token]?.hiddenProportionalPosition != nil
     }
 
-    func layoutReason(for handle: WindowHandle) -> LayoutReason {
-        entries[handle]?.layoutReason ?? .standard
+    func layoutReason(for token: WindowToken) -> LayoutReason {
+        entries[token]?.layoutReason ?? .standard
     }
 
-    func setLayoutReason(_ reason: LayoutReason, for handle: WindowHandle) {
-        guard let entry = entries[handle] else { return }
+    func setLayoutReason(_ reason: LayoutReason, for token: WindowToken) {
+        guard let entry = entries[token] else { return }
         if reason != .standard, entry.layoutReason == .standard {
             entry.prevParentKind = entry.parentKind
         }
         entry.layoutReason = reason
     }
 
-    func restoreFromNativeState(for handle: WindowHandle) -> ParentKind? {
-        guard let entry = entries[handle],
+    func restoreFromNativeState(for token: WindowToken) -> ParentKind? {
+        guard let entry = entries[token],
               entry.layoutReason != .standard,
               let prevKind = entry.prevParentKind else { return nil }
         entry.layoutReason = .standard
@@ -210,41 +206,37 @@ final class WindowModel {
     @discardableResult
     func removeMissing(keys activeKeys: Set<WindowKey>, requiredConsecutiveMisses: Int = 1) -> [Entry] {
         let threshold = max(1, requiredConsecutiveMisses)
-        let knownKeys = Array(keyToHandle.keys)
+        let knownTokens = Array(entries.keys)
         var removedEntries: [Entry] = []
 
-        for key in knownKeys where activeKeys.contains(key) {
-            missingDetectionCountByKey.removeValue(forKey: key)
+        for token in knownTokens where activeKeys.contains(token) {
+            missingDetectionCountByToken.removeValue(forKey: token)
         }
 
-        let missingKeys = knownKeys.filter { !activeKeys.contains($0) }
-        var confirmedMissing: [WindowKey] = []
-        confirmedMissing.reserveCapacity(missingKeys.count)
+        let missingTokens = knownTokens.filter { !activeKeys.contains($0) }
+        var confirmedMissing: [WindowToken] = []
+        confirmedMissing.reserveCapacity(missingTokens.count)
 
-        for key in missingKeys {
-            let misses = (missingDetectionCountByKey[key] ?? 0) + 1
+        for token in missingTokens {
+            let misses = (missingDetectionCountByToken[token] ?? 0) + 1
             if misses >= threshold {
-                confirmedMissing.append(key)
-                missingDetectionCountByKey.removeValue(forKey: key)
+                confirmedMissing.append(token)
+                missingDetectionCountByToken.removeValue(forKey: token)
             } else {
-                missingDetectionCountByKey[key] = misses
+                missingDetectionCountByToken[token] = misses
             }
         }
 
-        for key in confirmedMissing {
-            if let handle = keyToHandle[key] {
-                if let entry = entries[handle] {
-                    removedEntries.append(entry)
-                    removeHandle(handle, from: entry.workspaceId)
-                    windowIdToHandle.removeValue(forKey: entry.windowId)
-                }
-                entries.removeValue(forKey: handle)
-                keyToHandle.removeValue(forKey: key)
+        for token in confirmedMissing {
+            if let entry = entries[token] {
+                removedEntries.append(entry)
+                removeToken(token, from: entry.workspaceId)
             }
+            entries.removeValue(forKey: token)
         }
 
-        if !missingDetectionCountByKey.isEmpty {
-            missingDetectionCountByKey = missingDetectionCountByKey.filter { keyToHandle[$0.key] != nil }
+        if !missingDetectionCountByToken.isEmpty {
+            missingDetectionCountByToken = missingDetectionCountByToken.filter { entries[$0.key] != nil }
         }
 
         return removedEntries
@@ -252,35 +244,27 @@ final class WindowModel {
 
     @discardableResult
     func removeWindow(key: WindowKey) -> Entry? {
-        missingDetectionCountByKey.removeValue(forKey: key)
-        if let handle = keyToHandle[key] {
-            if let entry = entries[handle] {
-                removeHandle(handle, from: entry.workspaceId)
-                windowIdToHandle.removeValue(forKey: entry.windowId)
-                entries.removeValue(forKey: handle)
-                keyToHandle.removeValue(forKey: key)
-                return entry
-            }
-            entries.removeValue(forKey: handle)
-            keyToHandle.removeValue(forKey: key)
-        }
-        return nil
+        missingDetectionCountByToken.removeValue(forKey: key)
+        guard let entry = entries[key] else { return nil }
+        removeToken(key, from: entry.workspaceId)
+        entries.removeValue(forKey: key)
+        return entry
     }
 
-    func cachedConstraints(for handle: WindowHandle, maxAge: TimeInterval = 5.0) -> WindowSizeConstraints? {
-        guard let entry = entries[handle],
+    func cachedConstraints(for token: WindowToken, maxAge: TimeInterval = 5.0) -> WindowSizeConstraints? {
+        guard let entry = entries[token],
               let cached = entry.cachedConstraints,
               let cacheTime = entry.constraintsCacheTime,
-              Date().timeIntervalSince(cacheTime) < maxAge else {
+              Date().timeIntervalSince(cacheTime) < maxAge
+        else {
             return nil
         }
         return cached
     }
 
-    func setCachedConstraints(_ constraints: WindowSizeConstraints, for handle: WindowHandle) {
-        guard let entry = entries[handle] else { return }
+    func setCachedConstraints(_ constraints: WindowSizeConstraints, for token: WindowToken) {
+        guard let entry = entries[token] else { return }
         entry.cachedConstraints = constraints
         entry.constraintsCacheTime = Date()
     }
-
 }

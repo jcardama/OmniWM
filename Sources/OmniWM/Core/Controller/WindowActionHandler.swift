@@ -106,7 +106,7 @@ final class WindowActionHandler {
     private func activateWindowFromOverview(handle: WindowHandle, workspaceId: WorkspaceDescriptor.ID) {
         guard let controller else { return }
         guard controller.workspaceManager.entry(for: handle) != nil else { return }
-        navigateToWindowInternal(handle: handle, workspaceId: workspaceId)
+        navigateToWindowInternal(token: handle.id, workspaceId: workspaceId)
     }
 
     private func closeWindowFromOverview(handle: WindowHandle) {
@@ -194,10 +194,10 @@ final class WindowActionHandler {
     private func navigateToWindow(_ item: WindowFinderItem) {
         guard let controller else { return }
         guard let entry = controller.workspaceManager.entry(for: item.handle) else { return }
-        navigateToWindowInternal(handle: item.handle, workspaceId: entry.workspaceId)
+        navigateToWindowInternal(token: item.handle.id, workspaceId: entry.workspaceId)
     }
 
-    func navigateToWindowInternal(handle: WindowHandle, workspaceId: WorkspaceDescriptor.ID) {
+    func navigateToWindowInternal(token: WindowToken, workspaceId: WorkspaceDescriptor.ID) {
         guard let controller else { return }
         guard let engine = controller.niriEngine else { return }
 
@@ -211,7 +211,7 @@ final class WindowActionHandler {
             }
         }
 
-        if let niriWindow = engine.findNode(for: handle) {
+        if let niriWindow = engine.findNode(for: token) {
             controller.workspaceManager.withNiriViewportState(for: workspaceId) { state in
                 state.selectedNodeId = niriWindow.id
 
@@ -233,9 +233,9 @@ final class WindowActionHandler {
             }
         }
 
-        _ = controller.workspaceManager.rememberFocus(handle, in: workspaceId)
+        _ = controller.workspaceManager.rememberFocus(token, in: workspaceId)
         controller.layoutRefreshController.commitWorkspaceTransition(reason: .workspaceTransition) { [weak controller] in
-            controller?.focusWindow(handle)
+            controller?.focusWindow(token)
         }
     }
 
@@ -247,18 +247,18 @@ final class WindowActionHandler {
 
         guard let result = controller.workspaceManager.focusWorkspace(named: name) else { return }
 
-        let focusedHandle = controller.resolveAndSetWorkspaceFocus(for: result.workspace.id)
+        let focusedToken = controller.resolveAndSetWorkspaceFocusToken(for: result.workspace.id)
         controller.layoutRefreshController.commitWorkspaceTransition(reason: .workspaceTransition) { [weak controller] in
-            if let focusedHandle {
-                controller?.focusWindow(focusedHandle)
+            if let focusedToken {
+                controller?.focusWindow(focusedToken)
             }
         }
     }
 
-    func focusWindowFromBar(windowId: Int) {
+    func focusWindowFromBar(token: WindowToken) {
         guard let controller else { return }
-        guard let entry = controller.workspaceManager.entry(forWindowId: windowId) else { return }
-        navigateToWindowInternal(handle: entry.handle, workspaceId: entry.workspaceId)
+        guard let entry = controller.workspaceManager.entry(for: token) else { return }
+        navigateToWindowInternal(token: token, workspaceId: entry.workspaceId)
     }
 
     func runningAppsWithWindows() -> [RunningAppInfo] {

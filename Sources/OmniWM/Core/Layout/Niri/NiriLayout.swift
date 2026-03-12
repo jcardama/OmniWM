@@ -35,8 +35,8 @@ extension CGRect {
 }
 
 struct LayoutResult {
-    let frames: [WindowHandle: CGRect]
-    let hiddenHandles: [WindowHandle: HideSide]
+    let frames: [WindowToken: CGRect]
+    let hiddenHandles: [WindowToken: HideSide]
 }
 
 extension NiriLayoutEngine {
@@ -71,7 +71,7 @@ extension NiriLayoutEngine {
         scale: CGFloat = 2.0,
         workingArea: WorkingAreaContext? = nil,
         orientation: Monitor.Orientation = .horizontal
-    ) -> [WindowHandle: CGRect] {
+    ) -> [WindowToken: CGRect] {
         calculateLayoutWithVisibility(
             state: state,
             workspaceId: workspaceId,
@@ -95,8 +95,8 @@ extension NiriLayoutEngine {
         orientation: Monitor.Orientation = .horizontal,
         animationTime: TimeInterval? = nil
     ) -> LayoutResult {
-        var frames: [WindowHandle: CGRect] = [:]
-        var hiddenHandles: [WindowHandle: HideSide] = [:]
+        var frames: [WindowToken: CGRect] = [:]
+        var hiddenHandles: [WindowToken: HideSide] = [:]
         calculateLayoutInto(
             frames: &frames,
             hiddenHandles: &hiddenHandles,
@@ -114,8 +114,8 @@ extension NiriLayoutEngine {
     }
 
     func calculateLayoutInto(
-        frames: inout [WindowHandle: CGRect],
-        hiddenHandles: inout [WindowHandle: HideSide],
+        frames: inout [WindowToken: CGRect],
+        hiddenHandles: inout [WindowToken: HideSide],
         state: ViewportState,
         workspaceId: WorkspaceDescriptor.ID,
         monitorFrame: CGRect,
@@ -250,7 +250,7 @@ extension NiriLayoutEngine {
                 let hideSide: HideSide = containerEnd <= viewStart ? .left : .right
                 containerSides[idx] = hideSide
                 for window in containerWindowNodes[idx] {
-                    hiddenHandles[window.handle] = hideSide
+                    hiddenHandles[window.token] = hideSide
                 }
             }
         }
@@ -306,7 +306,7 @@ extension NiriLayoutEngine {
         scale: CGFloat,
         containerRenderOffset: CGPoint = .zero,
         animationTime: TimeInterval? = nil,
-        result: inout [WindowHandle: CGRect],
+        result: inout [WindowToken: CGRect],
         orientation: Monitor.Orientation
     ) {
         container.frame = containerRect
@@ -340,7 +340,7 @@ extension NiriLayoutEngine {
 
         let sizingModes = windows.map { $0.sizingMode }
         let windowRenderOffsets = windows.map { $0.renderOffset(at: time) }
-        let windowHandles = windows.map { $0.handle }
+        let windowTokens = windows.map { $0.token }
 
         var pos: CGFloat = switch orientation {
         case .horizontal: contentRect.origin.y
@@ -389,7 +389,7 @@ extension NiriLayoutEngine {
             )
             let animatedFrame = frame.offsetBy(dx: totalOffset.x, dy: totalOffset.y)
                 .roundedToPhysicalPixels(scale: scale)
-            result[windowHandles[i]] = animatedFrame
+            result[windowTokens[i]] = animatedFrame
 
             if !isTabbed {
                 pos += span

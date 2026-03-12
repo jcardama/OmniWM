@@ -24,7 +24,7 @@ import QuartzCore
         let workspaceId: WorkspaceDescriptor.ID
         let layoutType: LayoutType
         let removedNodeId: NodeId?
-        let niriOldFrames: [WindowHandle: CGRect]
+        let niriOldFrames: [WindowToken: CGRect]
         let shouldRecoverFocus: Bool
     }
 
@@ -429,7 +429,7 @@ import QuartzCore
         workspaceId: WorkspaceDescriptor.ID,
         layoutType: LayoutType,
         removedNodeId: NodeId?,
-        niriOldFrames: [WindowHandle: CGRect],
+        niriOldFrames: [WindowToken: CGRect],
         shouldRecoverFocus: Bool,
         postLayout: PostLayoutAction? = nil
     ) {
@@ -532,7 +532,7 @@ import QuartzCore
         guard !Task.isCancelled else { return false }
 
         if recoverFocus, let focusedWorkspaceId = controller.activeWorkspace()?.id {
-            controller.ensureFocusedHandleValid(in: focusedWorkspaceId)
+            controller.ensureFocusedTokenValid(in: focusedWorkspaceId)
         }
 
         return true
@@ -566,19 +566,19 @@ import QuartzCore
         if let controller {
             for monitor in controller.workspaceManager.monitors {
                 if let ws = controller.workspaceManager.activeWorkspaceOrFirst(on: monitor.id) {
-                    let handles = controller.workspaceManager.entries(in: ws.id).map(\.handle)
+                    let tokens = controller.workspaceManager.entries(in: ws.id).map(\.token)
                     let layoutType = controller.settings.layoutType(for: ws.name)
-                    let focused = controller.workspaceManager.preferredFocusHandle(in: ws.id)
+                    let focused = controller.workspaceManager.preferredFocusToken(in: ws.id)
 
                     switch layoutType {
                     case .dwindle:
                         if let dwindleEngine = controller.dwindleEngine {
-                            _ = dwindleEngine.syncWindows(handles, in: ws.id, focusedHandle: focused)
+                            _ = dwindleEngine.syncWindows(tokens, in: ws.id, focusedToken: focused)
                         }
                     case .niri, .defaultLayout:
                         if let niriEngine = controller.niriEngine {
                             let selection = controller.workspaceManager.niriViewportState(for: ws.id).selectedNodeId
-                            _ = niriEngine.syncWindows(handles, in: ws.id, selectedNodeId: selection, focusedHandle: focused)
+                            _ = niriEngine.syncWindows(tokens, in: ws.id, selectedNodeId: selection, focusedToken: focused)
                         }
                     }
                 }
@@ -673,15 +673,15 @@ import QuartzCore
         guard !Task.isCancelled else { return false }
 
         for workspaceId in focusedWorkspacesToRecover where activeWorkspaceIds.contains(workspaceId) {
-            controller.ensureFocusedHandleValid(in: workspaceId)
+            controller.ensureFocusedTokenValid(in: workspaceId)
         }
 
-        if let focusedHandle = controller.workspaceManager.focusedHandle,
-           let entry = controller.workspaceManager.entry(for: focusedHandle),
+        if let focusedToken = controller.workspaceManager.focusedToken,
+           let entry = controller.workspaceManager.entry(for: focusedToken),
            let frame = try? AXWindowService.frame(entry.axRef)
         {
             controller.borderCoordinator.updateBorderIfAllowed(
-                handle: focusedHandle,
+                token: focusedToken,
                 frame: frame,
                 windowId: entry.windowId
             )
@@ -693,8 +693,8 @@ import QuartzCore
     }
 
     private func refreshFocusedBorderForVisibilityState(on controller: WMController) {
-        guard let focusedHandle = controller.workspaceManager.focusedHandle,
-              let entry = controller.workspaceManager.entry(for: focusedHandle)
+        guard let focusedToken = controller.workspaceManager.focusedToken,
+              let entry = controller.workspaceManager.entry(for: focusedToken)
         else {
             controller.borderManager.hideBorder()
             return
@@ -711,7 +711,7 @@ import QuartzCore
         }
 
         controller.borderCoordinator.updateBorderIfAllowed(
-            handle: focusedHandle,
+            token: focusedToken,
             frame: frame,
             windowId: entry.windowId
         )
@@ -789,7 +789,7 @@ import QuartzCore
         }
         for entry in controller.workspaceManager.allEntries()
         where controller.hiddenAppPIDs.contains(entry.handle.pid)
-            || controller.workspaceManager.layoutReason(for: entry.handle) == .macosHiddenApp
+            || controller.workspaceManager.layoutReason(for: entry.token) == .macosHiddenApp
         {
             seenKeys.insert(.init(pid: entry.handle.pid, windowId: entry.windowId))
         }
@@ -839,7 +839,7 @@ import QuartzCore
         try Task.checkCancellation()
 
         if let focusedWorkspaceId {
-            controller.ensureFocusedHandleValid(in: focusedWorkspaceId)
+            controller.ensureFocusedTokenValid(in: focusedWorkspaceId)
         }
 
         layoutState.hasCompletedInitialRefresh = true
@@ -1306,7 +1306,7 @@ import QuartzCore
         guard let controller else { return }
         guard let frame = AXWindowService.framePreferFast(entry.axRef) else { return }
         let frameEntry = (pid: entry.handle.pid, windowId: entry.windowId)
-        if !controller.workspaceManager.isHiddenInCorner(entry.handle) {
+        if !controller.workspaceManager.isHiddenInCorner(entry.token) {
             let center = frame.center
             let referenceMonitor = center.monitorApproximation(in: controller.workspaceManager.monitors) ?? monitor
             let referenceFrame = referenceMonitor.frame
@@ -1316,16 +1316,16 @@ import QuartzCore
                 referenceMonitorId: referenceMonitor.id,
                 workspaceInactive: reason == .workspaceInactive
             )
-            controller.workspaceManager.setHiddenState(hiddenState, for: entry.handle)
+            controller.workspaceManager.setHiddenState(hiddenState, for: entry.token)
         } else if reason == .workspaceInactive,
-                  let existingState = controller.workspaceManager.hiddenState(for: entry.handle),
+                  let existingState = controller.workspaceManager.hiddenState(for: entry.token),
                   !existingState.workspaceInactive {
             let upgradedState = WindowModel.HiddenState(
                 proportionalPosition: existingState.proportionalPosition,
                 referenceMonitorId: existingState.referenceMonitorId,
                 workspaceInactive: true
             )
-            controller.workspaceManager.setHiddenState(upgradedState, for: entry.handle)
+            controller.workspaceManager.setHiddenState(upgradedState, for: entry.token)
         }
         controller.axManager.suppressFrameWrites([frameEntry])
         controller.axManager.cancelPendingFrameJobs([frameEntry])
@@ -1362,11 +1362,11 @@ import QuartzCore
 
     func unhideWindow(_ entry: WindowModel.Entry, monitor: Monitor) {
         guard let controller else { return }
-        if let hiddenState = controller.workspaceManager.hiddenState(for: entry.handle),
+        if let hiddenState = controller.workspaceManager.hiddenState(for: entry.token),
            hiddenState.workspaceInactive {
             restoreWindowFromHiddenState(entry, monitor: monitor, hiddenState: hiddenState)
         }
-        controller.workspaceManager.setHiddenState(nil, for: entry.handle)
+        controller.workspaceManager.setHiddenState(nil, for: entry.token)
         controller.axManager.unsuppressFrameWrites([(entry.handle.pid, entry.windowId)])
     }
 
@@ -1554,17 +1554,17 @@ import QuartzCore
 
     func updateWindowConstraints(
         in wsId: WorkspaceDescriptor.ID,
-        updateEngine: (WindowHandle, WindowSizeConstraints) -> Void
+        updateEngine: (WindowToken, WindowSizeConstraints) -> Void
     ) {
         guard let controller else { return }
         for entry in controller.workspaceManager.entries(in: wsId) {
             let currentSize = (AXWindowService.framePreferFast(entry.axRef))?.size
             var constraints: WindowSizeConstraints
-            if let cached = controller.workspaceManager.cachedConstraints(for: entry.handle) {
+            if let cached = controller.workspaceManager.cachedConstraints(for: entry.token) {
                 constraints = cached
             } else {
                 constraints = AXWindowService.sizeConstraints(entry.axRef, currentSize: currentSize)
-                controller.workspaceManager.setCachedConstraints(constraints, for: entry.handle)
+                controller.workspaceManager.setCachedConstraints(constraints, for: entry.token)
             }
 
             if let bundleId = controller.appInfoCache.bundleId(for: entry.handle.pid),
@@ -1578,7 +1578,7 @@ import QuartzCore
                 }
             }
 
-            updateEngine(entry.handle, constraints)
+            updateEngine(entry.token, constraints)
         }
     }
 }

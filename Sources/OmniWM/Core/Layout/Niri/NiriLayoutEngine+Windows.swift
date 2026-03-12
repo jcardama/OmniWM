@@ -7,7 +7,7 @@ extension NiriLayoutEngine {
         state: ViewportState,
         workingFrame: CGRect? = nil,
         gaps: CGFloat = 0
-    ) -> [WindowHandle: HideSide] {
+    ) -> [WindowToken: HideSide] {
         let cols = columns(in: workspaceId)
         guard !cols.isEmpty else { return [:] }
 
@@ -27,18 +27,18 @@ extension NiriLayoutEngine {
             runningX += column.cachedWidth + gaps
         }
 
-        var hiddenHandles = [WindowHandle: HideSide]()
+        var hiddenHandles = [WindowToken: HideSide]()
         for (colIdx, column) in cols.enumerated() {
             let colX = columnPositions[colIdx]
             let colRight = colX + column.cachedWidth
 
             if colRight <= viewLeft {
                 for window in column.windowNodes {
-                    hiddenHandles[window.handle] = .left
+                    hiddenHandles[window.token] = .left
                 }
             } else if colX >= viewRight {
                 for window in column.windowNodes {
-                    hiddenHandles[window.handle] = .right
+                    hiddenHandles[window.token] = .right
                 }
             } else {
                 for window in column.windowNodes {
@@ -49,7 +49,7 @@ extension NiriLayoutEngine {
                         )
                         if visibleWidth < 1.0 {
                             let side: HideSide = windowFrame.midX < workingFrame.midX ? .left : .right
-                            hiddenHandles[window.handle] = side
+                            hiddenHandles[window.token] = side
                         }
                     }
                 }
@@ -58,29 +58,29 @@ extension NiriLayoutEngine {
         return hiddenHandles
     }
 
-    func updateWindowConstraints(for handle: WindowHandle, constraints: WindowSizeConstraints) {
-        guard let node = handleToNode[handle] else { return }
+    func updateWindowConstraints(for token: WindowToken, constraints: WindowSizeConstraints) {
+        guard let node = tokenToNode[token] else { return }
         node.constraints = constraints
     }
 
     func addWindow(
-        handle: WindowHandle,
+        token: WindowToken,
         to workspaceId: WorkspaceDescriptor.ID,
         afterSelection selectedNodeId: NodeId?,
-        focusedHandle: WindowHandle? = nil
+        focusedToken: WindowToken? = nil
     ) -> NiriWindow {
         let root = ensureRoot(for: workspaceId)
 
         if let existingColumn = claimEmptyColumnIfWorkspaceEmpty(in: root) {
             existingColumn.width = .proportion(1.0 / CGFloat(maxVisibleColumns))
-            let windowNode = NiriWindow(handle: handle)
+            let windowNode = NiriWindow(token: token)
             existingColumn.appendChild(windowNode)
-            handleToNode[handle] = windowNode
+            tokenToNode[token] = windowNode
             return windowNode
         }
 
-        let referenceColumn: NiriContainer? = if let focused = focusedHandle,
-                                                 let focusedNode = handleToNode[focused],
+        let referenceColumn: NiriContainer? = if let focusedToken,
+                                                 let focusedNode = tokenToNode[focusedToken],
                                                  let col = column(of: focusedNode)
         {
             col
@@ -101,24 +101,24 @@ extension NiriLayoutEngine {
             root.appendChild(newColumn)
         }
 
-        let windowNode = NiriWindow(handle: handle)
+        let windowNode = NiriWindow(token: token)
         newColumn.appendChild(windowNode)
 
-        handleToNode[handle] = windowNode
+        tokenToNode[token] = windowNode
 
         return windowNode
     }
 
-    func removeWindow(handle: WindowHandle) {
-        guard let node = handleToNode[handle] else { return }
-        closingHandles.remove(handle)
+    func removeWindow(token: WindowToken) {
+        guard let node = tokenToNode[token] else { return }
+        closingTokens.remove(token)
 
         guard let column = node.parent as? NiriContainer else { return }
 
         column.adjustActiveTileIdxForRemoval(of: node)
 
         node.remove()
-        handleToNode.removeValue(forKey: handle)
+        tokenToNode.removeValue(forKey: token)
 
         if column.displayMode == .tabbed, !column.children.isEmpty {
             column.clampActiveTileIdx()
@@ -145,35 +145,32 @@ extension NiriLayoutEngine {
 
     @discardableResult
     func syncWindows(
-        _ handles: [WindowHandle],
+        _ tokens: [WindowToken],
         in workspaceId: WorkspaceDescriptor.ID,
         selectedNodeId: NodeId?,
-        focusedHandle: WindowHandle? = nil
-    ) -> Set<WindowHandle> {
+        focusedToken: WindowToken? = nil
+    ) -> Set<WindowToken> {
         let root = ensureRoot(for: workspaceId)
         let existingIdSet = root.windowIdSet
 
-        var currentIdSet = Set<UUID>(minimumCapacity: handles.count)
-        for handle in handles {
-            currentIdSet.insert(handle.id)
-        }
+        let currentIdSet = Set(tokens)
 
-        var removedHandles = Set<WindowHandle>()
+        var removedHandles = Set<WindowToken>()
 
         for window in root.allWindows {
-            if !currentIdSet.contains(window.windowId) {
-                removedHandles.insert(window.handle)
-                removeWindow(handle: window.handle)
+            if !currentIdSet.contains(window.token) {
+                removedHandles.insert(window.token)
+                removeWindow(token: window.token)
             }
         }
 
-        for handle in handles {
-            if !existingIdSet.contains(handle.id) {
+        for token in tokens {
+            if !existingIdSet.contains(token) {
                 _ = addWindow(
-                    handle: handle,
+                    token: token,
                     to: workspaceId,
                     afterSelection: selectedNodeId,
-                    focusedHandle: focusedHandle
+                    focusedToken: focusedToken
                 )
             }
         }
@@ -244,8 +241,8 @@ extension NiriLayoutEngine {
         node.lastFocusedTime = Date()
     }
 
-    func updateFocusTimestamp(for handle: WindowHandle) {
-        guard let node = findNode(for: handle) else { return }
+    func updateFocusTimestamp(for token: WindowToken) {
+        guard let node = findNode(for: token) else { return }
         node.lastFocusedTime = Date()
     }
 

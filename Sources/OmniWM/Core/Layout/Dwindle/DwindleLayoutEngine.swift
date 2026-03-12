@@ -4,22 +4,22 @@ import QuartzCore
 
 final class DwindleLayoutEngine {
     private var roots: [WorkspaceDescriptor.ID: DwindleNode] = [:]
-    private var windowToNode: [WindowHandle: DwindleNode] = [:]
+    private var tokenToNode: [WindowToken: DwindleNode] = [:]
     private var selectedNodeId: [WorkspaceDescriptor.ID: DwindleNodeId] = [:]
     private var preselection: [WorkspaceDescriptor.ID: Direction] = [:]
-    private var windowConstraints: [WindowHandle: WindowSizeConstraints] = [:]
+    private var windowConstraints: [WindowToken: WindowSizeConstraints] = [:]
 
     var settings: DwindleSettings = DwindleSettings()
     private var monitorSettings: [Monitor.ID: ResolvedDwindleSettings] = [:]
     var animationClock: AnimationClock?
     var displayRefreshRate: Double = 60.0
 
-    func updateWindowConstraints(for handle: WindowHandle, constraints: WindowSizeConstraints) {
-        windowConstraints[handle] = constraints
+    func updateWindowConstraints(for token: WindowToken, constraints: WindowSizeConstraints) {
+        windowConstraints[token] = constraints
     }
 
-    func constraints(for handle: WindowHandle) -> WindowSizeConstraints {
-        windowConstraints[handle] ?? .unconstrained
+    func constraints(for token: WindowToken) -> WindowSizeConstraints {
+        windowConstraints[token] ?? .unconstrained
     }
 
     func updateMonitorSettings(_ resolved: ResolvedDwindleSettings, for monitorId: Monitor.ID) {
@@ -68,20 +68,20 @@ final class DwindleLayoutEngine {
     func removeLayout(for workspaceId: WorkspaceDescriptor.ID) {
         if let root = roots.removeValue(forKey: workspaceId) {
             for window in root.collectAllWindows() {
-                windowToNode.removeValue(forKey: window)
+                tokenToNode.removeValue(forKey: window)
                 windowConstraints.removeValue(forKey: window)
             }
         }
         selectedNodeId.removeValue(forKey: workspaceId)
     }
 
-    func containsWindow(_ handle: WindowHandle, in workspaceId: WorkspaceDescriptor.ID) -> Bool {
+    func containsWindow(_ token: WindowToken, in workspaceId: WorkspaceDescriptor.ID) -> Bool {
         guard let root = roots[workspaceId] else { return false }
-        return root.collectAllWindows().contains(handle)
+        return root.collectAllWindows().contains(token)
     }
 
-    func findNode(for handle: WindowHandle) -> DwindleNode? {
-        windowToNode[handle]
+    func findNode(for token: WindowToken) -> DwindleNode? {
+        tokenToNode[token]
     }
 
     func windowCount(in workspaceId: WorkspaceDescriptor.ID) -> Int {
@@ -122,15 +122,15 @@ final class DwindleLayoutEngine {
 
     @discardableResult
     func addWindow(
-        handle: WindowHandle,
+        token: WindowToken,
         to workspaceId: WorkspaceDescriptor.ID,
         activeWindowFrame: CGRect?
     ) -> DwindleNode {
         let root = ensureRoot(for: workspaceId)
 
         if case let .leaf(existingHandle, _) = root.kind, existingHandle == nil {
-            root.kind = .leaf(handle: handle, fullscreen: false)
-            windowToNode[handle] = root
+            root.kind = .leaf(handle: token, fullscreen: false)
+            tokenToNode[token] = root
             selectedNodeId[workspaceId] = root.id
             return root
         }
@@ -145,21 +145,21 @@ final class DwindleLayoutEngine {
         let preselectedDir = preselection[workspaceId]
         let newLeaf = splitLeaf(
             targetNode,
-            newWindow: handle,
+            newWindow: token,
             workspaceId: workspaceId,
             activeWindowFrame: activeWindowFrame,
             preselectedDirection: preselectedDir
         )
         preselection.removeValue(forKey: workspaceId)
 
-        windowToNode[handle] = newLeaf
+        tokenToNode[token] = newLeaf
         selectedNodeId[workspaceId] = newLeaf.id
         return newLeaf
     }
 
     private func splitLeaf(
         _ leaf: DwindleNode,
-        newWindow: WindowHandle,
+        newWindow: WindowToken,
         workspaceId: WorkspaceDescriptor.ID,
         activeWindowFrame: CGRect?,
         preselectedDirection: Direction? = nil
@@ -194,7 +194,7 @@ final class DwindleLayoutEngine {
         }
 
         if let existingHandle {
-            windowToNode[existingHandle] = existingLeaf
+            tokenToNode[existingHandle] = existingLeaf
         }
 
         return newLeaf
@@ -245,9 +245,9 @@ final class DwindleLayoutEngine {
         return .horizontal
     }
 
-    func removeWindow(handle: WindowHandle, from workspaceId: WorkspaceDescriptor.ID) {
-        guard let node = windowToNode.removeValue(forKey: handle) else { return }
-        windowConstraints.removeValue(forKey: handle)
+    func removeWindow(token: WindowToken, from workspaceId: WorkspaceDescriptor.ID) {
+        guard let node = tokenToNode.removeValue(forKey: token) else { return }
+        windowConstraints.removeValue(forKey: token)
 
         if case .leaf = node.kind {
             node.kind = .leaf(handle: nil, fullscreen: false)
@@ -278,7 +278,7 @@ final class DwindleLayoutEngine {
 
         for window in sibling.collectAllWindows() {
             if let leafNode = findLeafContaining(window, in: parent) {
-                windowToNode[window] = leafNode
+                tokenToNode[window] = leafNode
             }
         }
 
@@ -288,8 +288,8 @@ final class DwindleLayoutEngine {
         }
     }
 
-    private func findLeafContaining(_ handle: WindowHandle, in root: DwindleNode) -> DwindleNode? {
-        if case let .leaf(h, _) = root.kind, h === handle {
+    private func findLeafContaining(_ handle: WindowToken, in root: DwindleNode) -> DwindleNode? {
+        if case let .leaf(h, _) = root.kind, h == handle {
             return root
         }
         for child in root.children {
@@ -301,28 +301,28 @@ final class DwindleLayoutEngine {
     }
 
     func syncWindows(
-        _ handles: [WindowHandle],
+        _ tokens: [WindowToken],
         in workspaceId: WorkspaceDescriptor.ID,
-        focusedHandle: WindowHandle?
-    ) -> Set<WindowHandle> {
+        focusedToken: WindowToken?
+    ) -> Set<WindowToken> {
         let existingWindows = Set(roots[workspaceId]?.collectAllWindows() ?? [])
-        let newWindows = Set(handles)
+        let newWindows = Set(tokens)
 
         let toRemove = existingWindows.subtracting(newWindows)
         let toAdd = newWindows.subtracting(existingWindows)
 
-        for handle in toRemove {
-            removeWindow(handle: handle, from: workspaceId)
+        for token in toRemove {
+            removeWindow(token: token, from: workspaceId)
         }
 
         var activeFrame: CGRect?
-        if let focused = focusedHandle, let node = windowToNode[focused] {
+        if let focusedToken, let node = tokenToNode[focusedToken] {
             activeFrame = node.cachedFrame
         }
 
-        for handle in toAdd {
-            addWindow(handle: handle, to: workspaceId, activeWindowFrame: activeFrame)
-            if let newNode = windowToNode[handle] {
+        for token in toAdd {
+            addWindow(token: token, to: workspaceId, activeWindowFrame: activeFrame)
+            if let newNode = tokenToNode[token] {
                 activeFrame = newNode.cachedFrame
             }
         }
@@ -333,7 +333,7 @@ final class DwindleLayoutEngine {
     func calculateLayout(
         for workspaceId: WorkspaceDescriptor.ID,
         screen: CGRect
-    ) -> [WindowHandle: CGRect] {
+    ) -> [WindowToken: CGRect] {
         guard let root = roots[workspaceId] else { return [:] }
 
         let windowCount = root.collectAllWindows().count
@@ -343,7 +343,7 @@ final class DwindleLayoutEngine {
 
         invalidateMinSizeCache(for: workspaceId)
 
-        var output: [WindowHandle: CGRect] = [:]
+        var output: [WindowToken: CGRect] = [:]
         let tilingArea = DwindleGapCalculator.applyOuterGapsOnly(rect: screen, settings: settings)
 
         if windowCount == 1 {
@@ -371,14 +371,14 @@ final class DwindleLayoutEngine {
         return output
     }
 
-    func currentFrames(in workspaceId: WorkspaceDescriptor.ID) -> [WindowHandle: CGRect] {
+    func currentFrames(in workspaceId: WorkspaceDescriptor.ID) -> [WindowToken: CGRect] {
         guard let root = roots[workspaceId] else { return [:] }
-        var frames: [WindowHandle: CGRect] = [:]
+        var frames: [WindowToken: CGRect] = [:]
         collectCurrentFrames(node: root, into: &frames)
         return frames
     }
 
-    private func collectCurrentFrames(node: DwindleNode, into frames: inout [WindowHandle: CGRect]) {
+    private func collectCurrentFrames(node: DwindleNode, into frames: inout [WindowToken: CGRect]) {
         if case let .leaf(handle, _) = node.kind, let handle, let frame = node.cachedFrame {
             frames[handle] = frame
         }
@@ -391,7 +391,7 @@ final class DwindleLayoutEngine {
         node: DwindleNode,
         rect: CGRect,
         tilingArea: CGRect,
-        output: inout [WindowHandle: CGRect]
+        output: inout [WindowToken: CGRect]
     ) {
         switch node.kind {
         case let .leaf(handle, fullscreen):
@@ -571,15 +571,15 @@ final class DwindleLayoutEngine {
     }
 
     func findGeometricNeighbor(
-        from handle: WindowHandle,
+        from handle: WindowToken,
         direction: Direction,
         in workspaceId: WorkspaceDescriptor.ID
-    ) -> WindowHandle? {
+    ) -> WindowToken? {
         guard let currentNode = findNode(for: handle),
               let currentFrame = currentNode.cachedFrame,
               let root = roots[workspaceId] else { return nil }
 
-        var candidates: [(handle: WindowHandle, overlap: CGFloat)] = []
+        var candidates: [(handle: WindowToken, overlap: CGFloat)] = []
 
         collectNavigationCandidates(
             from: root,
@@ -602,7 +602,7 @@ final class DwindleLayoutEngine {
         currentFrame: CGRect,
         direction: Direction,
         innerGap: CGFloat,
-        candidates: inout [(handle: WindowHandle, overlap: CGFloat)]
+        candidates: inout [(handle: WindowToken, overlap: CGFloat)]
     ) {
         if node.id == current.id {
             for child in node.children {
@@ -618,7 +618,7 @@ final class DwindleLayoutEngine {
             return
         }
 
-        if node.isLeaf, let handle = node.windowHandle, let candidateFrame = node.cachedFrame {
+        if node.isLeaf, let handle = node.windowToken, let candidateFrame = node.cachedFrame {
             if let overlap = calculateDirectionalOverlap(
                 from: currentFrame,
                 to: candidateFrame,
@@ -698,13 +698,13 @@ final class DwindleLayoutEngine {
         }
     }
 
-    func moveFocus(direction: Direction, in workspaceId: WorkspaceDescriptor.ID) -> WindowHandle? {
+    func moveFocus(direction: Direction, in workspaceId: WorkspaceDescriptor.ID) -> WindowToken? {
         guard let current = selectedNode(in: workspaceId),
-              let currentHandle = current.windowHandle else {
+              let currentHandle = current.windowToken else {
             if let root = roots[workspaceId] {
                 let firstLeaf = root.descendToFirstLeaf()
                 selectedNodeId[workspaceId] = firstLeaf.id
-                return firstLeaf.windowHandle
+                return firstLeaf.windowToken
             }
             return nil
         }
@@ -750,9 +750,9 @@ final class DwindleLayoutEngine {
         neighbor.sizeWAnimation = nil
         neighbor.sizeHAnimation = nil
 
-        windowToNode[ch] = neighbor
+        tokenToNode[ch] = neighbor
         if let nh {
-            windowToNode[nh] = current
+            tokenToNode[nh] = current
         }
 
         selectedNodeId[workspaceId] = neighbor.id
@@ -770,7 +770,7 @@ final class DwindleLayoutEngine {
         parent.kind = .split(orientation: orientation.perpendicular, ratio: ratio)
     }
 
-    func toggleFullscreen(in workspaceId: WorkspaceDescriptor.ID) -> WindowHandle? {
+    func toggleFullscreen(in workspaceId: WorkspaceDescriptor.ID) -> WindowToken? {
         guard let selected = selectedNode(in: workspaceId),
               case let .leaf(handle, fullscreen) = selected.kind else {
             return nil
@@ -934,12 +934,12 @@ final class DwindleLayoutEngine {
     }
 
     func animateWindowMovements(
-        oldFrames: [WindowHandle: CGRect],
-        newFrames: [WindowHandle: CGRect]
+        oldFrames: [WindowToken: CGRect],
+        newFrames: [WindowToken: CGRect]
     ) {
         for (handle, newFrame) in newFrames {
             guard let oldFrame = oldFrames[handle],
-                  let node = windowToNode[handle] else { continue }
+                  let node = tokenToNode[handle] else { continue }
 
             let changed = abs(oldFrame.origin.x - newFrame.origin.x) > 0.5 ||
                           abs(oldFrame.origin.y - newFrame.origin.y) > 0.5 ||
@@ -958,14 +958,14 @@ final class DwindleLayoutEngine {
     }
 
     func calculateAnimatedFrames(
-        baseFrames: [WindowHandle: CGRect],
+        baseFrames: [WindowToken: CGRect],
         in workspaceId: WorkspaceDescriptor.ID,
         at time: TimeInterval
-    ) -> [WindowHandle: CGRect] {
+    ) -> [WindowToken: CGRect] {
         var result = baseFrames
 
         for (handle, frame) in baseFrames {
-            guard let node = windowToNode[handle] else { continue }
+            guard let node = tokenToNode[handle] else { continue }
             let posOffset = node.renderOffset(at: time)
             let sizeOffset = node.renderSizeOffset(at: time)
 

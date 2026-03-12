@@ -55,17 +55,17 @@ private func makeOverviewWindowItem(
         let handle1 = model.upsert(window: makeAXWindowRef(windowId: 101), pid: 77, windowId: 101, workspace: ws1)
         let handle2 = model.upsert(window: makeAXWindowRef(windowId: 102), pid: 77, windowId: 102, workspace: ws1)
 
-        #expect(model.windows(in: ws1).map(\.handle) == [handle1, handle2])
+        #expect(model.windows(in: ws1).map(\.token) == [handle1, handle2])
 
         model.updateWorkspace(for: handle1, workspace: ws2)
-        #expect(model.windows(in: ws1).map(\.handle) == [handle2])
-        #expect(model.windows(in: ws2).map(\.handle) == [handle1])
+        #expect(model.windows(in: ws1).map(\.token) == [handle2])
+        #expect(model.windows(in: ws2).map(\.token) == [handle1])
 
         model.updateWorkspace(for: handle1, workspace: ws2)
-        #expect(model.windows(in: ws2).map(\.handle) == [handle1])
+        #expect(model.windows(in: ws2).map(\.token) == [handle1])
 
         model.updateWorkspace(for: handle1, workspace: ws1)
-        #expect(model.windows(in: ws1).map(\.handle) == [handle2, handle1])
+        #expect(model.windows(in: ws1).map(\.token) == [handle2, handle1])
     }
 
     @Test func windowModelRemoveMissingMaintainsIndexConsistency() {
@@ -82,8 +82,8 @@ private func makeOverviewWindowItem(
         #expect(model.windows(in: ws1).map(\.windowId) == [201, 203])
 
         model.updateWorkspace(for: h3, workspace: ws2)
-        #expect(model.windows(in: ws1).map(\.handle) == [h1])
-        #expect(model.windows(in: ws2).map(\.handle) == [h3])
+        #expect(model.windows(in: ws1).map(\.token) == [h1])
+        #expect(model.windows(in: ws2).map(\.token) == [h3])
     }
 
     @Test func windowModelRemoveMissingRequiresConsecutiveMissesWhenConfigured() {
@@ -106,6 +106,23 @@ private func makeOverviewWindowItem(
         model.removeMissing(keys: [.init(pid: 45, windowId: 303)], requiredConsecutiveMisses: 2)
         model.removeMissing(keys: [], requiredConsecutiveMisses: 2)
         #expect(model.entry(forWindowId: 303) != nil)
+    }
+
+    @Test func windowModelUpsertRefreshesAxRefWithoutDuplicatingStableToken() {
+        let model = WindowModel()
+        let workspaceId = WorkspaceDescriptor.ID()
+        let firstRef = makeAXWindowRef(windowId: 401)
+        let secondRef = makeAXWindowRef(windowId: 401)
+
+        let token1 = model.upsert(window: firstRef, pid: 55, windowId: 401, workspace: workspaceId)
+        let handle1 = model.handle(for: token1)
+        let token2 = model.upsert(window: secondRef, pid: 55, windowId: 401, workspace: workspaceId)
+        let handle2 = model.handle(for: token2)
+
+        #expect(token1 == token2)
+        #expect(handle1 === handle2)
+        #expect(model.windows(in: workspaceId).count == 1)
+        #expect(model.entry(for: token1)?.axRef.windowId == secondRef.windowId)
     }
 
     @Test func overviewLayoutHoverAndSelectionOnlyTouchOldAndNew() {

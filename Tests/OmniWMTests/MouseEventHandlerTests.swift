@@ -57,12 +57,15 @@ private func prepareMouseResizeFixture() async -> (
         fatalError("Missing active workspace for mouse fixture")
     }
 
-    let handle = controller.workspaceManager.addWindow(
+    let token = controller.workspaceManager.addWindow(
         makeMouseEventTestWindow(windowId: 901),
         pid: getpid(),
         windowId: 901,
         to: workspaceId
     )
+    guard let handle = controller.workspaceManager.handle(for: token) else {
+        fatalError("Missing bridge handle for mouse fixture")
+    }
     _ = controller.workspaceManager.rememberFocus(handle, in: workspaceId)
 
     guard let engine = controller.niriEngine else {

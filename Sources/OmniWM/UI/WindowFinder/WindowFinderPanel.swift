@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 struct WindowFinderItem: Identifiable {
-    let id: UUID
+    let id: WindowToken
     let handle: WindowHandle
     let title: String
     let appName: String
@@ -22,7 +22,7 @@ final class WindowFinderController: ObservableObject {
         }
     }
 
-    @Published var selectedItemId: UUID?
+    @Published var selectedItemId: WindowToken?
     @Published var windows: [WindowFinderItem] = [] {
         didSet { updateSelectionAfterFilterChange() }
     }
