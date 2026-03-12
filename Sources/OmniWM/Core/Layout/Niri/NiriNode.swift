@@ -173,6 +173,7 @@ class NiriNode {
     var size: CGFloat = 1.0
 
     var frame: CGRect?
+    var renderedFrame: CGRect?
 
     init() {
         id = NodeId()

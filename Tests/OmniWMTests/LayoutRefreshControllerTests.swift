@@ -69,7 +69,7 @@ import Testing
         )
 
         var hideDiff = WorkspaceLayoutDiff()
-        hideDiff.visibilityChanges = [.hide(token, side: .right, targetY: 120)]
+        hideDiff.visibilityChanges = [.hide(token, side: .right)]
         hideDiff.borderMode = .none
 
         controller.layoutRefreshController.executeLayoutPlan(
@@ -97,6 +97,28 @@ import Testing
         )
 
         #expect(controller.workspaceManager.hiddenState(for: token) == nil)
+    }
+
+    @Test @MainActor func liveFrameHideOriginPreservesWindowYForTransientHide() {
+        let controller = makeLayoutPlanTestController()
+        guard let monitor = controller.workspaceManager.monitors.first else {
+            Issue.record("Missing monitor for transient hide-origin test")
+            return
+        }
+
+        let frame = CGRect(x: 240, y: 180, width: 800, height: 600)
+        guard let origin = controller.layoutRefreshController.liveFrameHideOrigin(
+            for: frame,
+            monitor: monitor,
+            side: .left,
+            pid: getpid()
+        ) else {
+            Issue.record("Expected a live-frame hide origin for transient hide test")
+            return
+        }
+
+        #expect(origin.y == frame.origin.y)
+        #expect(origin.x < monitor.visibleFrame.minX)
     }
 
     @Test @MainActor func executeLayoutPlanRestoresInactiveWindowFromFrameDiffWithoutShow() {

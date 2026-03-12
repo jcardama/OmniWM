@@ -60,18 +60,21 @@ struct LayoutHiddenStateSnapshot {
     let proportionalPosition: CGPoint
     let referenceMonitorId: Monitor.ID?
     let workspaceInactive: Bool
+    let offscreenSide: HideSide?
 
     init(_ state: WindowModel.HiddenState) {
         proportionalPosition = state.proportionalPosition
         referenceMonitorId = state.referenceMonitorId
         workspaceInactive = state.workspaceInactive
+        offscreenSide = state.offscreenSide
     }
 
     var windowModelHiddenState: WindowModel.HiddenState {
         .init(
             proportionalPosition: proportionalPosition,
             referenceMonitorId: referenceMonitorId,
-            workspaceInactive: workspaceInactive
+            workspaceInactive: workspaceInactive,
+            offscreenSide: offscreenSide
         )
     }
 }
@@ -83,7 +86,7 @@ struct LayoutRestoreChange {
 
 enum LayoutVisibilityChange {
     case show(WindowToken)
-    case hide(WindowToken, side: HideSide, targetY: CGFloat?)
+    case hide(WindowToken, side: HideSide)
 }
 
 struct LayoutFocusedFrame {

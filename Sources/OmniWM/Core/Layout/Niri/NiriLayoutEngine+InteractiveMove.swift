@@ -29,7 +29,7 @@ extension NiriLayoutEngine {
             workspaceId: workspaceId,
             startMouseLocation: startLocation,
             originalColumnIndex: colIdx,
-            originalFrame: windowNode.frame ?? .zero,
+            originalFrame: windowNode.renderedFrame ?? windowNode.frame ?? .zero,
             isInsertMode: isInsertMode,
             currentHoverTarget: nil
         )
@@ -134,7 +134,7 @@ extension NiriLayoutEngine {
             for child in column.children {
                 guard let window = child as? NiriWindow,
                       window.id != excludingWindowId,
-                      let frame = window.frame else { continue }
+                      let frame = window.renderedFrame ?? window.frame else { continue }
 
                 if frame.contains(point) {
                     let position: InsertPosition = if isInsertMode {
@@ -297,7 +297,7 @@ extension NiriLayoutEngine {
         gaps: CGFloat
     ) -> CGRect? {
         guard let targetWindow = findNode(by: targetWindowId) as? NiriWindow,
-              let targetFrame = targetWindow.frame,
+              let targetFrame = targetWindow.renderedFrame ?? targetWindow.frame,
               let column = findColumn(containing: targetWindow, in: workspaceId)
         else {
             return nil
@@ -306,8 +306,8 @@ extension NiriLayoutEngine {
         let windows = column.windowNodes
         let n = windows.count
         let postInsertionCount = n + 1
-        let firstFrame = windows.first?.frame
-        let lastFrame = windows.last?.frame
+        let firstFrame = windows.first?.renderedFrame ?? windows.first?.frame
+        let lastFrame = windows.last?.renderedFrame ?? windows.last?.frame
         guard let bottom = firstFrame?.minY, let top = lastFrame?.maxY else { return nil }
 
         let columnHeight = top - bottom

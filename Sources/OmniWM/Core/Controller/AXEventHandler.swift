@@ -348,7 +348,7 @@ final class AXEventHandler: CGSEventDelegate {
                 )
             )
 
-            if let frame = node.frame {
+            if let frame = node.renderedFrame ?? node.frame {
                 controller.borderCoordinator.updateBorderIfAllowed(handle: entry.handle, frame: frame, windowId: entry.windowId)
             } else if let frame = try? AXWindowService.frame(entry.axRef) {
                 controller.borderCoordinator.updateBorderIfAllowed(handle: entry.handle, frame: frame, windowId: entry.windowId)

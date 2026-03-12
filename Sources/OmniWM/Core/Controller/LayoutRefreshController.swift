@@ -1480,7 +1480,7 @@ import QuartzCore
         guard let controller else { return }
         for entry in controller.workspaceManager.entries(in: workspaceId) {
             controller.axManager.markWindowInactive(entry.windowId)
-            hideWindow(entry, monitor: monitor, side: preferredSide, targetY: nil, reason: .workspaceInactive)
+            hideWindow(entry, monitor: monitor, side: preferredSide, reason: .workspaceInactive)
         }
     }
 
@@ -1514,47 +1514,31 @@ import QuartzCore
         for entry: WindowModel.Entry,
         monitor: Monitor,
         side: HideSide,
-        targetY: CGFloat?,
         reason: HideReason
     ) -> WindowPositionPlan? {
         guard let controller else { return nil }
-        guard let frame = AXWindowService.framePreferFast(entry.axRef) else { return nil }
-
-        if !controller.workspaceManager.isHiddenInCorner(entry.token) {
-            let center = frame.center
-            let referenceMonitor = center.monitorApproximation(in: controller.workspaceManager.monitors) ?? monitor
-            let referenceFrame = referenceMonitor.frame
-            let proportional = proportionalPosition(topLeft: frame.topLeftCorner, in: referenceFrame)
-            let hiddenState = WindowModel.HiddenState(
-                proportionalPosition: proportional,
-                referenceMonitorId: referenceMonitor.id,
-                workspaceInactive: reason == .workspaceInactive
-            )
-            controller.workspaceManager.setHiddenState(hiddenState, for: entry.token)
-        } else if reason == .workspaceInactive,
-                  let existingState = controller.workspaceManager.hiddenState(for: entry.token),
-                  !existingState.workspaceInactive
-        {
-            let upgradedState = WindowModel.HiddenState(
-                proportionalPosition: existingState.proportionalPosition,
-                referenceMonitorId: existingState.referenceMonitorId,
-                workspaceInactive: true
-            )
-            controller.workspaceManager.setHiddenState(upgradedState, for: entry.token)
+        guard let frame = AXWindowService.framePreferFast(entry.axRef)
+            ?? controller.axManager.lastAppliedFrame(for: entry.windowId)
+        else {
+            return nil
         }
-
-        let yPos = targetY ?? frame.origin.y
-        let scale = backingScale(for: monitor)
-        let origin = hiddenOrigin(
-            for: frame.size,
-            edgeFrame: monitor.visibleFrame,
-            scale: scale,
-            side: side,
-            pid: entry.handle.pid,
-            targetY: yPos,
+        let hiddenState = updatedHiddenState(
+            for: entry,
+            frame: frame,
             monitor: monitor,
-            monitors: controller.workspaceManager.monitors
+            side: side,
+            reason: reason
         )
+        controller.workspaceManager.setHiddenState(hiddenState, for: entry.token)
+
+        guard let origin = liveFrameHideOrigin(
+            for: frame,
+            monitor: monitor,
+            side: side,
+            pid: entry.handle.pid
+        ) else {
+            return nil
+        }
 
         let moveEpsilon: CGFloat = 0.01
         if abs(frame.origin.x - origin.x) < moveEpsilon,
@@ -1570,20 +1554,78 @@ import QuartzCore
         )
     }
 
-    func hideWindow(_ entry: WindowModel.Entry, monitor: Monitor, side: HideSide, targetY: CGFloat?, reason: HideReason) {
+    private func updatedHiddenState(
+        for entry: WindowModel.Entry,
+        frame: CGRect,
+        monitor: Monitor,
+        side: HideSide,
+        reason: HideReason
+    ) -> WindowModel.HiddenState {
+        guard let controller else {
+            return WindowModel.HiddenState(
+                proportionalPosition: .zero,
+                referenceMonitorId: nil,
+                workspaceInactive: reason == .workspaceInactive,
+                offscreenSide: reason == .layoutTransient ? side : nil
+            )
+        }
+
+        let existingState = controller.workspaceManager.hiddenState(for: entry.token)
+        let proportionalPosition: CGPoint
+        let referenceMonitorId: Monitor.ID?
+
+        if let existingState {
+            proportionalPosition = existingState.proportionalPosition
+            referenceMonitorId = existingState.referenceMonitorId
+        } else {
+            let center = frame.center
+            let referenceMonitor = center.monitorApproximation(in: controller.workspaceManager.monitors) ?? monitor
+            proportionalPosition = self.proportionalPosition(topLeft: frame.topLeftCorner, in: referenceMonitor.frame)
+            referenceMonitorId = referenceMonitor.id
+        }
+
+        return WindowModel.HiddenState(
+            proportionalPosition: proportionalPosition,
+            referenceMonitorId: referenceMonitorId,
+            workspaceInactive: reason == .workspaceInactive,
+            offscreenSide: reason == .layoutTransient ? side : nil
+        )
+    }
+
+    func hideWindow(_ entry: WindowModel.Entry, monitor: Monitor, side: HideSide, reason: HideReason) {
         guard let controller else { return }
         let frameEntry = (pid: entry.handle.pid, windowId: entry.windowId)
-        controller.axManager.suppressFrameWrites([frameEntry])
         controller.axManager.cancelPendingFrameJobs([frameEntry])
-        if let plan = makeHidePositionPlan(
+        let plan = makeHidePositionPlan(
             for: entry,
             monitor: monitor,
             side: side,
-            targetY: targetY,
             reason: reason
-        ) {
+        )
+        controller.axManager.suppressFrameWrites([frameEntry])
+        if let plan {
             applyPositionPlans([plan])
         }
+    }
+
+    func liveFrameHideOrigin(
+        for frame: CGRect,
+        monitor: Monitor,
+        side: HideSide,
+        pid: pid_t
+    ) -> CGPoint? {
+        guard let controller else { return nil }
+        let scale = backingScale(for: monitor)
+        let placement = HiddenWindowPlacementResolver.placement(
+            for: frame.size,
+            requestedSide: side,
+            targetY: frame.origin.y,
+            baseReveal: Self.hiddenEdgeReveal(isZoomApp: isZoomApp(pid)),
+            scale: scale,
+            monitor: HiddenPlacementMonitorContext(monitor),
+            monitors: controller.workspaceManager.monitors.map(HiddenPlacementMonitorContext.init)
+        )
+        return placement.origin
     }
 
     func unhideWindow(_ entry: WindowModel.Entry, monitor: Monitor) {
@@ -1602,55 +1644,6 @@ import QuartzCore
         let x = (topLeft.x - frame.minX) / width
         let y = (frame.maxY - topLeft.y) / height
         return CGPoint(x: min(max(0, x), 1), y: min(max(0, y), 1))
-    }
-
-    func hiddenOrigin(
-        for size: CGSize,
-        edgeFrame: CGRect,
-        scale: CGFloat,
-        side: HideSide,
-        pid: pid_t,
-        targetY: CGFloat,
-        monitor: Monitor,
-        monitors: [Monitor]
-    ) -> CGPoint {
-        let edgeReveal = Self.hiddenEdgeReveal(isZoomApp: isZoomApp(pid))
-        _ = scale
-
-        func origin(for side: HideSide) -> CGPoint {
-            switch side {
-            case .left:
-                return CGPoint(x: edgeFrame.minX - size.width + edgeReveal, y: targetY)
-            case .right:
-                return CGPoint(x: edgeFrame.maxX - edgeReveal, y: targetY)
-            }
-        }
-
-        func overlapArea(for origin: CGPoint) -> CGFloat {
-            let rect = CGRect(origin: origin, size: size)
-            var area: CGFloat = 0
-            for other in monitors where other.id != monitor.id {
-                let intersection = rect.intersection(other.frame)
-                if intersection.isNull { continue }
-                area += intersection.width * intersection.height
-            }
-            return area
-        }
-
-        let primaryOrigin = origin(for: side)
-        let primaryOverlap = overlapArea(for: primaryOrigin)
-        if primaryOverlap == 0 {
-            return primaryOrigin
-        }
-
-        let alternateSide: HideSide = side == .left ? .right : .left
-        let alternateOrigin = origin(for: alternateSide)
-        let alternateOverlap = overlapArea(for: alternateOrigin)
-        if alternateOverlap < primaryOverlap {
-            return alternateOrigin
-        }
-
-        return primaryOrigin
     }
 
     private func preferredHideSides(for monitors: [Monitor]) -> [Monitor.ID: HideSide] {
@@ -1714,7 +1707,11 @@ import QuartzCore
         hiddenState: WindowModel.HiddenState
     ) -> WindowPositionPlan? {
         guard let controller else { return nil }
-        guard let frame = AXWindowService.framePreferFast(entry.axRef) else { return nil }
+        guard let frame = AXWindowService.framePreferFast(entry.axRef)
+            ?? controller.axManager.lastAppliedFrame(for: entry.windowId)
+        else {
+            return nil
+        }
 
         let fallbackMonitor = hiddenState.referenceMonitorId
             .flatMap { controller.workspaceManager.monitor(byId: $0) }
@@ -1818,9 +1815,9 @@ final class LayoutDiffExecutor {
         let diff = plan.diff
 
         var resolvedEntries: [WindowToken: WindowModel.Entry] = [:]
-        var hiddenEntries: [(entry: WindowModel.Entry, side: HideSide, targetY: CGFloat?)] = []
+        var hiddenEntries: [(entry: WindowModel.Entry, side: HideSide)] = []
         var hiddenTokens: Set<WindowToken> = []
-        var explicitVisibleTokens: [WindowToken] = []
+        var shownEntries: [WindowModel.Entry] = []
         var restoreEntries: [(entry: WindowModel.Entry, hiddenState: LayoutHiddenStateSnapshot)] = []
         var restoreTokens: Set<WindowToken> = []
 
@@ -1838,12 +1835,12 @@ final class LayoutDiffExecutor {
         for change in diff.visibilityChanges {
             switch change {
             case let .show(token):
-                guard resolveEntry(for: token) != nil else { continue }
-                explicitVisibleTokens.append(token)
-            case let .hide(token, side, targetY):
+                guard let entry = resolveEntry(for: token) else { continue }
+                shownEntries.append(entry)
+            case let .hide(token, side):
                 hiddenTokens.insert(token)
                 guard let entry = resolveEntry(for: token) else { continue }
-                hiddenEntries.append((entry, side, targetY))
+                hiddenEntries.append((entry, side))
             }
         }
 
@@ -1856,24 +1853,19 @@ final class LayoutDiffExecutor {
             restoreEntries.append((entry, restoreChange.hiddenState))
         }
 
-        let visibleEntries = explicitVisibleTokens
-            .filter { !hiddenTokens.contains($0) }
-            .compactMap(resolveEntry(for:))
-
         if !hiddenEntries.isEmpty {
             let hiddenJobs = hiddenEntries.map { (pid: $0.entry.handle.pid, windowId: $0.entry.windowId) }
-            controller.axManager.suppressFrameWrites(hiddenJobs)
             controller.axManager.cancelPendingFrameJobs(hiddenJobs)
 
-            let hidePlans = hiddenEntries.compactMap { entry, side, targetY in
+            let hidePlans = hiddenEntries.compactMap { entry, side in
                 refreshController.makeHidePositionPlan(
                     for: entry,
                     monitor: monitor,
                     side: side,
-                    targetY: targetY,
                     reason: .layoutTransient
                 )
             }
+            controller.axManager.suppressFrameWrites(hiddenJobs)
             refreshController.applyPositionPlans(hidePlans)
         }
 
@@ -1892,22 +1884,22 @@ final class LayoutDiffExecutor {
             }
         }
 
-        if !visibleEntries.isEmpty {
-            for entry in visibleEntries where !restoreTokens.contains(entry.token) {
+        if !shownEntries.isEmpty {
+            for entry in shownEntries where !restoreTokens.contains(entry.token) {
                 controller.workspaceManager.setHiddenState(nil, for: entry.token)
             }
         }
 
-        if !restoreEntries.isEmpty || !visibleEntries.isEmpty {
+        if !restoreEntries.isEmpty || !shownEntries.isEmpty {
             var visibleJobs: [(pid: pid_t, windowId: Int)] = []
-            visibleJobs.reserveCapacity(restoreEntries.count + visibleEntries.count)
+            visibleJobs.reserveCapacity(restoreEntries.count + shownEntries.count)
             var seenTokens: Set<WindowToken> = []
 
             for (entry, _) in restoreEntries where seenTokens.insert(entry.token).inserted {
                 visibleJobs.append((entry.handle.pid, entry.windowId))
             }
 
-            for entry in visibleEntries where seenTokens.insert(entry.token).inserted {
+            for entry in shownEntries where seenTokens.insert(entry.token).inserted {
                 visibleJobs.append((entry.handle.pid, entry.windowId))
             }
 

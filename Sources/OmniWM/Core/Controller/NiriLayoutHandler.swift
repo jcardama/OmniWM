@@ -122,32 +122,12 @@ import QuartzCore
         else { return }
 
         if let node = engine.findNode(for: focusedToken),
-           let frame = node.frame {
+           let frame = node.renderedFrame ?? node.frame {
             controller.borderCoordinator.updateBorderIfAllowed(token: focusedToken, frame: frame, windowId: entry.windowId)
         }
 
         if controller.moveMouseToFocusedWindowEnabled {
             controller.moveMouseToWindow(focusedToken)
-        }
-    }
-
-    private func updateBorderDuringLayout(
-        frames: [WindowToken: CGRect],
-        hiddenHandles: [WindowToken: HideSide],
-        direct: Bool
-    ) {
-        guard let controller,
-              let focusedToken = controller.workspaceManager.focusedToken else { return }
-
-        if hiddenHandles[focusedToken] != nil {
-            controller.borderManager.hideBorder()
-        } else if let frame = frames[focusedToken],
-                  let entry = controller.workspaceManager.entry(for: focusedToken) {
-            if direct {
-                controller.borderManager.updateFocusedWindow(frame: frame, windowId: entry.windowId)
-            } else {
-                controller.borderCoordinator.updateBorderIfAllowed(token: focusedToken, frame: frame, windowId: entry.windowId)
-            }
         }
     }
 
@@ -759,14 +739,17 @@ import QuartzCore
 
         for window in windows {
             let token = window.token
+            let previousOffscreenSide = window.hiddenState?.offscreenSide
             if let side = hiddenHandles[token] {
-                diff.visibilityChanges.append(
-                    .hide(token, side: side, targetY: frames[token]?.origin.y)
-                )
+                if previousOffscreenSide != side {
+                    diff.visibilityChanges.append(.hide(token, side: side))
+                }
                 continue
             }
 
-            diff.visibilityChanges.append(.show(token))
+            if previousOffscreenSide != nil {
+                diff.visibilityChanges.append(.show(token))
+            }
 
             if canRestoreHiddenWorkspaceWindows,
                let hiddenState = window.hiddenState,
@@ -820,7 +803,7 @@ import QuartzCore
             else { continue }
 
             for column in engine.columns(in: workspace.id) where column.isTabbed {
-                guard let frame = column.frame else { continue }
+                guard let frame = column.renderedFrame ?? column.frame else { continue }
                 guard TabbedColumnOverlayManager.shouldShowOverlay(
                     columnFrame: frame,
                     visibleFrame: monitor.visibleFrame

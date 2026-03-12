@@ -93,7 +93,9 @@ extension NiriLayoutEngine {
         scale: CGFloat = 2.0,
         workingArea: WorkingAreaContext? = nil,
         orientation: Monitor.Orientation = .horizontal,
-        animationTime: TimeInterval? = nil
+        animationTime: TimeInterval? = nil,
+        hiddenPlacementMonitor: HiddenPlacementMonitorContext? = nil,
+        hiddenPlacementMonitors: [HiddenPlacementMonitorContext] = []
     ) -> LayoutResult {
         var frames: [WindowToken: CGRect] = [:]
         var hiddenHandles: [WindowToken: HideSide] = [:]
@@ -108,7 +110,9 @@ extension NiriLayoutEngine {
             scale: scale,
             workingArea: workingArea,
             orientation: orientation,
-            animationTime: animationTime
+            animationTime: animationTime,
+            hiddenPlacementMonitor: hiddenPlacementMonitor,
+            hiddenPlacementMonitors: hiddenPlacementMonitors
         )
         return LayoutResult(frames: frames, hiddenHandles: hiddenHandles)
     }
@@ -124,7 +128,9 @@ extension NiriLayoutEngine {
         scale: CGFloat = 2.0,
         workingArea: WorkingAreaContext? = nil,
         orientation: Monitor.Orientation = .horizontal,
-        animationTime: TimeInterval? = nil
+        animationTime: TimeInterval? = nil,
+        hiddenPlacementMonitor: HiddenPlacementMonitorContext? = nil,
+        hiddenPlacementMonitors: [HiddenPlacementMonitorContext] = []
     ) {
         let containers = columns(in: workspaceId)
         guard !containers.isEmpty else { return }
@@ -150,8 +156,7 @@ extension NiriLayoutEngine {
             monitorFrame: monitorFrame,
             time: time
         )
-        let offsetScreenRect = viewFrame.offsetBy(dx: workspaceOffset, dy: 0)
-        let offsetFullscreenRect = workingFrame.offsetBy(dx: workspaceOffset, dy: 0)
+        let canonicalFullscreenRect = workingFrame.roundedToPhysicalPixels(scale: effectiveScale)
 
         for container in containers {
             switch orientation {
@@ -176,147 +181,231 @@ extension NiriLayoutEngine {
         var containerPositions = [CGFloat]()
         containerPositions.reserveCapacity(containers.count)
         var runningPos: CGFloat = 0
-        var totalSpan: CGFloat = 0
         for i in 0 ..< containers.count {
             containerPositions.append(runningPos)
             let span = containerSpans[i]
             runningPos += span + primaryGap
-            totalSpan += span
-            if i < containers.count - 1 {
-                totalSpan += primaryGap
-            }
         }
 
         let viewOffset = state.viewOffsetPixels.value(at: time)
         let activeIdx = state.activeColumnIndex.clamped(to: 0 ... max(0, containers.count - 1))
         let activePos = containers.isEmpty ? 0 : containerPositions[activeIdx]
         let viewPos = activePos + viewOffset
-        let viewStart = viewPos
-        let viewportSpan: CGFloat = switch orientation {
-        case .horizontal: workingFrame.width
-        case .vertical: workingFrame.height
-        }
-        let viewEnd = viewStart + viewportSpan
-
-        var usedIndices = Set<Int>()
-        var containerSides: [Int: HideSide] = [:]
 
         for idx in 0 ..< containers.count {
             let containerPos = containerPositions[idx]
             let containerSpan = containerSpans[idx]
-            let containerEnd = containerPos + containerSpan
             let renderOffset = containerRenderOffsets[idx]
+            let canonicalContainerRect = canonicalContainerRect(
+                position: containerPos,
+                span: containerSpan,
+                workingFrame: workingFrame,
+                scale: effectiveScale,
+                orientation: orientation
+            )
+            let visibilityRect = visibleRenderedContainerRect(
+                canonicalRect: canonicalContainerRect,
+                viewPosition: viewPos,
+                workspaceOffset: workspaceOffset,
+                renderOffset: renderOffset,
+                scale: effectiveScale,
+                orientation: orientation
+            )
+            let isVisible = containerIntersectsViewport(
+                visibilityRect,
+                viewportFrame: workingFrame,
+                orientation: orientation
+            )
 
-            let isVisible = containerEnd > viewStart && containerPos < viewEnd
-
+            let renderedContainerRect: CGRect
             if isVisible {
-                usedIndices.insert(idx)
-
-                let containerRect: CGRect
-                switch orientation {
-                case .horizontal:
-                    let screenX = workingFrame.origin.x + containerPos - viewPos + renderOffset.x + workspaceOffset
-                    let width = containerSpan.roundedToPhysicalPixel(scale: effectiveScale)
-                    containerRect = CGRect(
-                        x: screenX,
-                        y: workingFrame.origin.y,
-                        width: width,
-                        height: workingFrame.height
-                    ).roundedToPhysicalPixels(scale: effectiveScale)
-                case .vertical:
-                    let screenY = workingFrame.origin.y + containerPos - viewPos + renderOffset.y
-                    let height = containerSpan.roundedToPhysicalPixel(scale: effectiveScale)
-                    containerRect = CGRect(
-                        x: workingFrame.origin.x + workspaceOffset,
-                        y: screenY,
-                        width: workingFrame.width,
-                        height: height
-                    ).roundedToPhysicalPixels(scale: effectiveScale)
-                }
-
-                layoutContainer(
-                    container: containers[idx],
-                    containerRect: containerRect,
-                    screenRect: offsetScreenRect,
-                    fullscreenRect: offsetFullscreenRect,
-                    secondaryGap: secondaryGap,
-                    scale: effectiveScale,
-                    containerRenderOffset: renderOffset,
-                    animationTime: time,
-                    result: &frames,
+                renderedContainerRect = visibilityRect
+            } else {
+                let hideSide = hiddenSide(
+                    for: visibilityRect,
+                    viewportFrame: workingFrame,
+                    fallback: idx == 0 ? .left : .right,
                     orientation: orientation
                 )
-            } else {
-                let hideSide: HideSide = containerEnd <= viewStart ? .left : .right
-                containerSides[idx] = hideSide
                 for window in containerWindowNodes[idx] {
                     hiddenHandles[window.token] = hideSide
                 }
-            }
-        }
-
-        if containers.count > usedIndices.count {
-            let avgSpan = totalSpan / CGFloat(max(1, containers.count))
-            let hiddenSpan = max(1, avgSpan).roundedToPhysicalPixel(scale: effectiveScale)
-            for (idx, container) in containers.enumerated() {
-                if usedIndices.contains(idx) { continue }
-
-                let hiddenRect: CGRect
-                switch orientation {
-                case .horizontal:
-                    let side = containerSides[idx] ?? .right
-                    hiddenRect = hiddenColumnRect(
-                        side: side,
-                        width: hiddenSpan,
-                        height: workingFrame.height,
-                        screenY: viewFrame.maxY - 2,
-                        edgeFrame: viewFrame,
-                        scale: effectiveScale
-                    ).offsetBy(dx: workspaceOffset, dy: 0).roundedToPhysicalPixels(scale: effectiveScale)
-                case .vertical:
-                    hiddenRect = hiddenRowRect(
-                        screenRect: viewFrame,
-                        width: workingFrame.width,
-                        height: hiddenSpan
-                    ).offsetBy(dx: workspaceOffset, dy: 0).roundedToPhysicalPixels(scale: effectiveScale)
-                }
-
-                layoutContainer(
-                    container: container,
-                    containerRect: hiddenRect,
-                    screenRect: offsetScreenRect,
-                    fullscreenRect: offsetFullscreenRect,
-                    secondaryGap: secondaryGap,
+                renderedContainerRect = hiddenRenderedContainerRect(
+                    canonicalRect: canonicalContainerRect,
+                    side: hideSide,
+                    viewFrame: viewFrame,
                     scale: effectiveScale,
-                    containerRenderOffset: .zero,
-                    animationTime: time,
-                    result: &frames,
-                    orientation: orientation
+                    orientation: orientation,
+                    hiddenPlacementMonitor: hiddenPlacementMonitor,
+                    hiddenPlacementMonitors: hiddenPlacementMonitors
                 )
             }
+
+            layoutContainer(
+                container: containers[idx],
+                canonicalContainerRect: canonicalContainerRect,
+                renderedContainerRect: renderedContainerRect,
+                fullscreenRect: canonicalFullscreenRect,
+                secondaryGap: secondaryGap,
+                scale: effectiveScale,
+                animationTime: time,
+                result: &frames,
+                orientation: orientation
+            )
+        }
+    }
+
+    private func canonicalContainerRect(
+        position: CGFloat,
+        span: CGFloat,
+        workingFrame: CGRect,
+        scale: CGFloat,
+        orientation: Monitor.Orientation
+    ) -> CGRect {
+        switch orientation {
+        case .horizontal:
+            let width = span.roundedToPhysicalPixel(scale: scale)
+            return CGRect(
+                x: workingFrame.origin.x + position,
+                y: workingFrame.origin.y,
+                width: width,
+                height: workingFrame.height
+            ).roundedToPhysicalPixels(scale: scale)
+        case .vertical:
+            let height = span.roundedToPhysicalPixel(scale: scale)
+            return CGRect(
+                x: workingFrame.origin.x,
+                y: workingFrame.origin.y + position,
+                width: workingFrame.width,
+                height: height
+            ).roundedToPhysicalPixels(scale: scale)
+        }
+    }
+
+    private func visibleRenderedContainerRect(
+        canonicalRect: CGRect,
+        viewPosition: CGFloat,
+        workspaceOffset: CGFloat,
+        renderOffset: CGPoint,
+        scale: CGFloat,
+        orientation: Monitor.Orientation
+    ) -> CGRect {
+        let translation: CGPoint = switch orientation {
+        case .horizontal:
+            CGPoint(
+                x: -viewPosition + workspaceOffset + renderOffset.x,
+                y: renderOffset.y
+            )
+        case .vertical:
+            CGPoint(
+                x: workspaceOffset + renderOffset.x,
+                y: -viewPosition + renderOffset.y
+            )
+        }
+        return canonicalRect.offsetBy(dx: translation.x, dy: translation.y)
+            .roundedToPhysicalPixels(scale: scale)
+    }
+
+    private func containerIntersectsViewport(
+        _ containerRect: CGRect,
+        viewportFrame: CGRect,
+        orientation: Monitor.Orientation
+    ) -> Bool {
+        switch orientation {
+        case .horizontal:
+            containerRect.maxX > viewportFrame.minX && containerRect.minX < viewportFrame.maxX
+        case .vertical:
+            containerRect.maxY > viewportFrame.minY && containerRect.minY < viewportFrame.maxY
+        }
+    }
+
+    private func hiddenSide(
+        for renderedRect: CGRect,
+        viewportFrame: CGRect,
+        fallback: HideSide,
+        orientation: Monitor.Orientation
+    ) -> HideSide {
+        switch orientation {
+        case .horizontal:
+            if renderedRect.maxX <= viewportFrame.minX {
+                return .left
+            }
+            if renderedRect.minX >= viewportFrame.maxX {
+                return .right
+            }
+        case .vertical:
+            if renderedRect.maxY <= viewportFrame.minY {
+                return .left
+            }
+            if renderedRect.minY >= viewportFrame.maxY {
+                return .right
+            }
+        }
+        return fallback
+    }
+
+    private func hiddenRenderedContainerRect(
+        canonicalRect: CGRect,
+        side: HideSide,
+        viewFrame: CGRect,
+        scale: CGFloat,
+        orientation: Monitor.Orientation,
+        hiddenPlacementMonitor: HiddenPlacementMonitorContext?,
+        hiddenPlacementMonitors: [HiddenPlacementMonitorContext]
+    ) -> CGRect {
+        switch orientation {
+        case .horizontal:
+            if let hiddenPlacementMonitor {
+                return HiddenWindowPlacementResolver.placement(
+                    for: canonicalRect.size,
+                    requestedSide: side,
+                    targetY: canonicalRect.minY,
+                    baseReveal: 1.0,
+                    scale: scale,
+                    monitor: hiddenPlacementMonitor,
+                    monitors: hiddenPlacementMonitors
+                )
+                .frame(for: canonicalRect.size)
+                .roundedToPhysicalPixels(scale: scale)
+            }
+
+            return hiddenColumnRect(
+                side: side,
+                width: canonicalRect.width,
+                height: canonicalRect.height,
+                screenY: canonicalRect.minY,
+                edgeFrame: viewFrame,
+                scale: scale
+            ).roundedToPhysicalPixels(scale: scale)
+        case .vertical:
+            return hiddenRowRect(
+                screenRect: viewFrame,
+                width: canonicalRect.width,
+                height: canonicalRect.height
+            ).roundedToPhysicalPixels(scale: scale)
         }
     }
 
     private func layoutContainer(
         container: NiriContainer,
-        containerRect: CGRect,
-        screenRect: CGRect,
+        canonicalContainerRect: CGRect,
+        renderedContainerRect: CGRect,
         fullscreenRect: CGRect,
         secondaryGap: CGFloat,
         scale: CGFloat,
-        containerRenderOffset: CGPoint = .zero,
         animationTime: TimeInterval? = nil,
         result: inout [WindowToken: CGRect],
         orientation: Monitor.Orientation
     ) {
-        container.frame = containerRect
+        container.frame = canonicalContainerRect
+        container.renderedFrame = renderedContainerRect
 
         let tabOffset = container.isTabbed ? renderStyle.tabIndicatorWidth : 0
         let contentRect = CGRect(
-            x: containerRect.origin.x + tabOffset,
-            y: containerRect.origin.y,
-            width: max(0, containerRect.width - tabOffset),
-            height: containerRect.height
+            x: canonicalContainerRect.origin.x + tabOffset,
+            y: canonicalContainerRect.origin.y,
+            width: max(0, canonicalContainerRect.width - tabOffset),
+            height: canonicalContainerRect.height
         )
 
         let windows = container.windowNodes
@@ -383,12 +472,13 @@ extension NiriLayoutEngine {
             }
 
             let windowOffset = windowRenderOffsets[i]
-            let totalOffset = CGPoint(
-                x: containerRenderOffset.x + windowOffset.x,
-                y: containerRenderOffset.y + windowOffset.y
+            let renderTranslation = CGPoint(
+                x: renderedContainerRect.origin.x - canonicalContainerRect.origin.x + windowOffset.x,
+                y: renderedContainerRect.origin.y - canonicalContainerRect.origin.y + windowOffset.y
             )
-            let animatedFrame = frame.offsetBy(dx: totalOffset.x, dy: totalOffset.y)
+            let animatedFrame = frame.offsetBy(dx: renderTranslation.x, dy: renderTranslation.y)
                 .roundedToPhysicalPixels(scale: scale)
+            windows[i].renderedFrame = animatedFrame
             result[windowTokens[i]] = animatedFrame
 
             if !isTabbed {

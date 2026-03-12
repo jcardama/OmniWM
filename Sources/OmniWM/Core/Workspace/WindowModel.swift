@@ -8,6 +8,19 @@ final class WindowModel {
         let proportionalPosition: CGPoint
         let referenceMonitorId: Monitor.ID?
         let workspaceInactive: Bool
+        let offscreenSide: HideSide?
+
+        init(
+            proportionalPosition: CGPoint,
+            referenceMonitorId: Monitor.ID?,
+            workspaceInactive: Bool,
+            offscreenSide: HideSide? = nil
+        ) {
+            self.proportionalPosition = proportionalPosition
+            self.referenceMonitorId = referenceMonitorId
+            self.workspaceInactive = workspaceInactive
+            self.offscreenSide = offscreenSide
+        }
     }
 
     final class Entry {
@@ -17,6 +30,7 @@ final class WindowModel {
         var hiddenProportionalPosition: CGPoint?
         var hiddenReferenceMonitorId: Monitor.ID?
         var hiddenByWorkspaceInactivity: Bool = false
+        var hiddenOffscreenSide: HideSide?
 
         var layoutReason: LayoutReason = .standard
         var parentKind: ParentKind = .tilingContainer
@@ -160,10 +174,12 @@ final class WindowModel {
             entry.hiddenProportionalPosition = state.proportionalPosition
             entry.hiddenReferenceMonitorId = state.referenceMonitorId
             entry.hiddenByWorkspaceInactivity = state.workspaceInactive
+            entry.hiddenOffscreenSide = state.offscreenSide
         } else {
             entry.hiddenProportionalPosition = nil
             entry.hiddenReferenceMonitorId = nil
             entry.hiddenByWorkspaceInactivity = false
+            entry.hiddenOffscreenSide = nil
         }
     }
 
@@ -173,7 +189,8 @@ final class WindowModel {
         return HiddenState(
             proportionalPosition: proportionalPosition,
             referenceMonitorId: entry.hiddenReferenceMonitorId,
-            workspaceInactive: entry.hiddenByWorkspaceInactivity
+            workspaceInactive: entry.hiddenByWorkspaceInactivity,
+            offscreenSide: entry.hiddenOffscreenSide
         )
     }
 

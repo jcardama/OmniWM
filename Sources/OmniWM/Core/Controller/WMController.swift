@@ -602,7 +602,7 @@ extension WMController {
                 if let entry = self.workspaceManager.entry(for: token) {
                     if let engine = self.niriEngine,
                        let node = engine.findNode(for: token),
-                       let frame = node.frame
+                       let frame = node.renderedFrame ?? node.frame
                     {
                         self.borderCoordinator.updateBorderIfAllowed(token: token, frame: frame, windowId: entry.windowId)
                     } else if let frame = try? AXWindowService.frame(entry.axRef) {

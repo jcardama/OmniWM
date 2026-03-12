@@ -193,6 +193,8 @@ extension NiriLayoutEngine {
             viewFrame: monitor.frame,
             scale: 2.0
         )
+        let hiddenPlacementMonitor = HiddenPlacementMonitorContext(monitor)
+        let hiddenPlacementMonitors = monitors.values.map(HiddenPlacementMonitorContext.init)
 
         let orientation = self.monitor(for: monitor.id)?.orientation ?? monitor.autoOrientation
 
@@ -205,7 +207,9 @@ extension NiriLayoutEngine {
             scale: area.scale,
             workingArea: area,
             orientation: orientation,
-            animationTime: animationTime
+            animationTime: animationTime,
+            hiddenPlacementMonitor: hiddenPlacementMonitor,
+            hiddenPlacementMonitors: hiddenPlacementMonitors
         )
     }
 
@@ -225,6 +229,8 @@ extension NiriLayoutEngine {
             viewFrame: monitor.frame,
             scale: 2.0
         )
+        let hiddenPlacementMonitor = HiddenPlacementMonitorContext(monitor)
+        let hiddenPlacementMonitors = monitors.values.map(HiddenPlacementMonitorContext.init)
 
         let orientation = self.monitor(for: monitor.id)?.orientation ?? monitor.autoOrientation
 
@@ -239,7 +245,9 @@ extension NiriLayoutEngine {
             scale: area.scale,
             workingArea: area,
             orientation: orientation,
-            animationTime: animationTime
+            animationTime: animationTime,
+            hiddenPlacementMonitor: hiddenPlacementMonitor,
+            hiddenPlacementMonitors: hiddenPlacementMonitors
         )
 
         return (framePool, hiddenPool)
@@ -249,7 +257,7 @@ extension NiriLayoutEngine {
         guard let root = root(for: workspaceId) else { return [:] }
         var frames: [WindowToken: CGRect] = [:]
         for window in root.allWindows {
-            if let frame = window.frame {
+            if let frame = window.renderedFrame ?? window.frame {
                 frames[window.token] = frame
             }
         }

@@ -61,6 +61,49 @@ private func hasHiddenVisibilityChange(_ changes: [LayoutVisibilityChange]) -> B
     }
 }
 
+private func hiddenVisibilitySides(_ changes: [LayoutVisibilityChange]) -> [HideSide] {
+    changes.compactMap { change in
+        if case let .hide(_, side: side) = change {
+            return side
+        }
+        return nil
+    }
+}
+
+private func hasHideVisibilityChange(
+    _ changes: [LayoutVisibilityChange],
+    token: WindowToken,
+    side: HideSide? = nil
+) -> Bool {
+    changes.contains { change in
+        guard case let .hide(candidate, changeSide) = change,
+              candidate == token
+        else {
+            return false
+        }
+        return side == nil || side == changeSide
+    }
+}
+
+private func hasShowVisibilityChange(
+    _ changes: [LayoutVisibilityChange],
+    token: WindowToken
+) -> Bool {
+    changes.contains { change in
+        if case let .show(candidate) = change {
+            return candidate == token
+        }
+        return false
+    }
+}
+
+private func hasAnyVisibilityChange(
+    _ changes: [LayoutVisibilityChange],
+    token: WindowToken
+) -> Bool {
+    hasHideVisibilityChange(changes, token: token) || hasShowVisibilityChange(changes, token: token)
+}
+
 @Suite struct NiriLayoutEngineTests {
 
     @Test func selectionFallbackAfterRemoval_sameSibling() {
@@ -438,7 +481,7 @@ private func hasHiddenVisibilityChange(_ changes: [LayoutVisibilityChange]) -> B
     }
 
     @Test @MainActor func snapshotPlanEmitsHideDiffForOffscreenWindows() async throws {
-        let monitor = makeLayoutPlanTestMonitor(width: 960, height: 1080)
+        let monitor = makeLayoutPlanTestMonitor(width: 1600, height: 900)
         let controller = makeLayoutPlanTestController(monitors: [monitor])
         guard let workspaceId = controller.workspaceManager.activeWorkspaceOrFirst(on: monitor.id)?.id
         else {
@@ -474,6 +517,378 @@ private func hasHiddenVisibilityChange(_ changes: [LayoutVisibilityChange]) -> B
         }
 
         #expect(hasHiddenVisibilityChange(plan.diff.visibilityChanges))
+        #expect(!hiddenVisibilitySides(plan.diff.visibilityChanges).isEmpty)
+    }
+
+    @Test @MainActor func offscreenLeftPlaceholderFramesUseWorkingFrameOriginOnMonitorWithoutLeftNeighbor() async throws {
+        let primaryMonitor = makeLayoutPlanTestMonitor(displayId: 1, name: "Primary", x: 0, width: 1600, height: 900)
+        let secondaryMonitor = makeLayoutPlanTestMonitor(displayId: 2, name: "Secondary", x: 1600, width: 1600, height: 900)
+        let controller = makeLayoutPlanTestController(monitors: [primaryMonitor, secondaryMonitor])
+        guard let workspaceId = controller.workspaceManager.activeWorkspaceOrFirst(on: primaryMonitor.id)?.id
+        else {
+            Issue.record("Missing active workspace for offscreen-left placeholder test")
+            return
+        }
+
+        controller.enableNiriLayout(maxWindowsPerColumn: 1)
+        await waitForLayoutPlanRefreshWork(on: controller)
+        controller.syncMonitorsToNiriEngine()
+
+        var tokens: [WindowToken] = []
+        for windowId in 701 ... 704 {
+            tokens.append(addLayoutPlanTestWindow(on: controller, workspaceId: workspaceId, windowId: windowId))
+        }
+
+        guard let engine = controller.niriEngine else {
+            Issue.record("Expected Niri engine for offscreen-left placeholder test")
+            return
+        }
+
+        let initialPlans = try await controller.niriLayoutHandler.layoutWithNiriEngine(
+            activeWorkspaces: [workspaceId]
+        )
+        controller.layoutRefreshController.executeLayoutPlans(initialPlans)
+
+        controller.workspaceManager.withNiriViewportState(for: workspaceId) { state in
+            state.viewOffsetPixels = .static(2500)
+        }
+
+        let gaps = LayoutGaps(
+            horizontal: CGFloat(controller.workspaceManager.gaps),
+            vertical: CGFloat(controller.workspaceManager.gaps),
+            outer: controller.workspaceManager.outerGaps
+        )
+        let workingFrame = controller.insetWorkingFrame(for: primaryMonitor)
+        let area = WorkingAreaContext(
+            workingFrame: workingFrame,
+            viewFrame: primaryMonitor.frame,
+            scale: controller.layoutRefreshController.backingScale(for: primaryMonitor)
+        )
+        let state = controller.workspaceManager.niriViewportState(for: workspaceId)
+        let (frames, hiddenHandles) = engine.calculateCombinedLayoutUsingPools(
+            in: workspaceId,
+            monitor: primaryMonitor,
+            gaps: gaps,
+            state: state,
+            workingArea: area,
+            animationTime: nil
+        )
+
+        let hiddenLeftTokens = tokens.filter { hiddenHandles[$0] == .left }
+        #expect(!hiddenLeftTokens.isEmpty)
+        for token in hiddenLeftTokens {
+            #expect(frames[token]?.origin.y == workingFrame.minY)
+        }
+    }
+
+    @Test func hiddenLeftRevealPreservesBottomTileHeightOnFirstVisibleFrame() {
+        let engine = NiriLayoutEngine(maxWindowsPerColumn: 3, maxVisibleColumns: 1)
+        let wsId = UUID()
+
+        let root = NiriRoot(workspaceId: wsId)
+        engine.roots[wsId] = root
+
+        let leftColumn = NiriContainer()
+        let rightColumn = NiriContainer()
+        root.appendChild(leftColumn)
+        root.appendChild(rightColumn)
+
+        let bottomHandle = makeTestHandle(pid: 41)
+        let topHandle = makeTestHandle(pid: 42)
+        let visibleHandle = makeTestHandle(pid: 43)
+
+        let bottomWindow = NiriWindow(handle: bottomHandle)
+        let topWindow = NiriWindow(handle: topHandle)
+        let visibleWindow = NiriWindow(handle: visibleHandle)
+
+        bottomWindow.height = .fixed(280)
+        topWindow.height = .auto(weight: 1.0)
+
+        leftColumn.appendChild(bottomWindow)
+        leftColumn.appendChild(topWindow)
+        rightColumn.appendChild(visibleWindow)
+
+        engine.tokenToNode[bottomHandle.id] = bottomWindow
+        engine.tokenToNode[topHandle.id] = topWindow
+        engine.tokenToNode[visibleHandle.id] = visibleWindow
+
+        let monitor = makeLayoutPlanTestMonitor(width: 960, height: 900)
+        let gaps = LayoutGaps(horizontal: 8, vertical: 8)
+        let area = WorkingAreaContext(
+            workingFrame: monitor.visibleFrame,
+            viewFrame: monitor.frame,
+            scale: 2.0
+        )
+
+        var hiddenState = ViewportState()
+        hiddenState.activeColumnIndex = 1
+        hiddenState.viewOffsetPixels = .static(0)
+
+        let hiddenLayout = engine.calculateCombinedLayoutUsingPools(
+            in: wsId,
+            monitor: monitor,
+            gaps: gaps,
+            state: hiddenState,
+            workingArea: area,
+            animationTime: nil
+        )
+
+        #expect(hiddenLayout.hiddenHandles[bottomHandle.id] == .left)
+        guard let canonicalBottomFrame = bottomWindow.frame,
+              let canonicalBottomHeight = bottomWindow.resolvedHeight
+        else {
+            Issue.record("Expected canonical bottom window geometry after hidden layout")
+            return
+        }
+
+        var revealState = hiddenState
+        revealState.viewOffsetPixels = .static(-20)
+
+        let revealLayout = engine.calculateCombinedLayoutUsingPools(
+            in: wsId,
+            monitor: monitor,
+            gaps: gaps,
+            state: revealState,
+            workingArea: area,
+            animationTime: nil
+        )
+
+        #expect(revealLayout.hiddenHandles[bottomHandle.id] == nil)
+        #expect(bottomWindow.frame == canonicalBottomFrame)
+        #expect(bottomWindow.resolvedHeight == canonicalBottomHeight)
+        #expect(revealLayout.frames[bottomHandle.id]?.minY == canonicalBottomFrame.minY)
+        #expect(revealLayout.frames[bottomHandle.id]?.height == canonicalBottomHeight)
+    }
+
+    @Test func renderOffsetVisibilityUsesRenderedContainerFrame() {
+        let engine = NiriLayoutEngine(maxWindowsPerColumn: 1, maxVisibleColumns: 1)
+        engine.animationClock = AnimationClock()
+        let wsId = UUID()
+
+        let root = NiriRoot(workspaceId: wsId)
+        engine.roots[wsId] = root
+
+        let visibleColumn = NiriContainer()
+        let hiddenColumn = NiriContainer()
+        root.appendChild(visibleColumn)
+        root.appendChild(hiddenColumn)
+
+        let visibleHandle = makeTestHandle(pid: 51)
+        let revealedHandle = makeTestHandle(pid: 52)
+        let visibleWindow = NiriWindow(handle: visibleHandle)
+        let revealedWindow = NiriWindow(handle: revealedHandle)
+
+        visibleColumn.appendChild(visibleWindow)
+        hiddenColumn.appendChild(revealedWindow)
+
+        engine.tokenToNode[visibleHandle.id] = visibleWindow
+        engine.tokenToNode[revealedHandle.id] = revealedWindow
+
+        let monitor = makeLayoutPlanTestMonitor(width: 1600, height: 900)
+        let gaps = LayoutGaps(horizontal: 8, vertical: 8)
+        let area = WorkingAreaContext(
+            workingFrame: monitor.visibleFrame,
+            viewFrame: monitor.frame,
+            scale: 2.0
+        )
+
+        var state = ViewportState()
+        state.activeColumnIndex = 0
+        state.viewOffsetPixels = .static(0)
+
+        guard let baseTime = engine.animationClock?.now() else {
+            Issue.record("Expected animation clock for render-offset visibility test")
+            return
+        }
+        let hiddenLayout = engine.calculateCombinedLayoutUsingPools(
+            in: wsId,
+            monitor: monitor,
+            gaps: gaps,
+            state: state,
+            workingArea: area,
+            animationTime: baseTime
+        )
+
+        #expect(hiddenLayout.hiddenHandles[revealedHandle.id] == .right)
+
+        hiddenColumn.animateMoveFrom(
+            displacement: CGPoint(x: -40, y: 0),
+            clock: engine.animationClock,
+            config: engine.windowMovementAnimationConfig,
+            displayRefreshRate: engine.displayRefreshRate
+        )
+
+        guard let animatedTime = engine.animationClock?.now() else {
+            Issue.record("Expected animation clock after render-offset animation")
+            return
+        }
+        let animatedLayout = engine.calculateCombinedLayoutUsingPools(
+            in: wsId,
+            monitor: monitor,
+            gaps: gaps,
+            state: state,
+            workingArea: area,
+            animationTime: animatedTime
+        )
+
+        let sampledOffset = hiddenColumn.renderOffset(at: animatedTime).x
+        #expect(sampledOffset < -8)
+        #expect((hiddenColumn.frame?.minX ?? 0) + sampledOffset < monitor.visibleFrame.maxX)
+        #expect(animatedLayout.hiddenHandles[revealedHandle.id] == nil)
+        #expect(animatedLayout.frames[revealedHandle.id]?.minX ?? .greatestFiniteMagnitude < monitor.visibleFrame.maxX)
+    }
+
+    @Test @MainActor func visibilityChangesOnlyEmitOnActualTransitions() async throws {
+        let monitor = makeLayoutPlanTestMonitor(width: 1600, height: 900)
+        let controller = makeLayoutPlanTestController(monitors: [monitor])
+        guard let workspaceId = controller.workspaceManager.activeWorkspaceOrFirst(on: monitor.id)?.id
+        else {
+            Issue.record("Missing workspace for visibility-transition test")
+            return
+        }
+
+        controller.enableNiriLayout(maxWindowsPerColumn: 1)
+        await waitForLayoutPlanRefreshWork(on: controller)
+        controller.syncMonitorsToNiriEngine()
+
+        _ = addLayoutPlanTestWindow(on: controller, workspaceId: workspaceId, windowId: 911)
+        let transitioningToken = addLayoutPlanTestWindow(on: controller, workspaceId: workspaceId, windowId: 912)
+
+        controller.workspaceManager.withNiriViewportState(for: workspaceId) { state in
+            state.viewOffsetPixels = .static(20)
+        }
+
+        let seededVisiblePlans = try await controller.niriLayoutHandler.layoutWithNiriEngine(
+            activeWorkspaces: [workspaceId]
+        )
+        guard seededVisiblePlans.first != nil else {
+            Issue.record("Expected visible seeding plan for visibility-transition test")
+            return
+        }
+        controller.layoutRefreshController.executeLayoutPlans(seededVisiblePlans)
+
+        controller.workspaceManager.withNiriViewportState(for: workspaceId) { state in
+            state.viewOffsetPixels = .static(0)
+        }
+
+        let initialPlans = try await controller.niriLayoutHandler.layoutWithNiriEngine(
+            activeWorkspaces: [workspaceId]
+        )
+        guard let initialPlan = initialPlans.first else {
+            Issue.record("Expected hidden transition plan for visibility-transition test")
+            return
+        }
+
+        #expect(hasHideVisibilityChange(initialPlan.diff.visibilityChanges, token: transitioningToken, side: .right))
+        controller.layoutRefreshController.executeLayoutPlans(initialPlans)
+
+        let stableHiddenPlans = try await controller.niriLayoutHandler.layoutWithNiriEngine(
+            activeWorkspaces: [workspaceId]
+        )
+        guard let stableHiddenPlan = stableHiddenPlans.first else {
+            Issue.record("Expected repeated hidden-state plan for visibility-transition test")
+            return
+        }
+
+        #expect(!hasAnyVisibilityChange(stableHiddenPlan.diff.visibilityChanges, token: transitioningToken))
+
+        controller.workspaceManager.withNiriViewportState(for: workspaceId) { state in
+            state.viewOffsetPixels = .static(20)
+        }
+
+        let revealPlans = try await controller.niriLayoutHandler.layoutWithNiriEngine(
+            activeWorkspaces: [workspaceId]
+        )
+        guard let revealPlan = revealPlans.first else {
+            Issue.record("Expected reveal plan for visibility-transition test")
+            return
+        }
+
+        #expect(hasShowVisibilityChange(revealPlan.diff.visibilityChanges, token: transitioningToken))
+        #expect(!hasHideVisibilityChange(revealPlan.diff.visibilityChanges, token: transitioningToken))
+        controller.layoutRefreshController.executeLayoutPlans(revealPlans)
+
+        let stableVisiblePlans = try await controller.niriLayoutHandler.layoutWithNiriEngine(
+            activeWorkspaces: [workspaceId]
+        )
+        guard let stableVisiblePlan = stableVisiblePlans.first else {
+            Issue.record("Expected repeated visible-state plan for visibility-transition test")
+            return
+        }
+
+        #expect(!hasAnyVisibilityChange(stableVisiblePlan.diff.visibilityChanges, token: transitioningToken))
+    }
+
+    @Test @MainActor func layoutHiddenPlacementMatchesLiveHideOriginForHiddenLeftColumn() async throws {
+        let primaryMonitor = makeLayoutPlanTestMonitor(displayId: 1, name: "Primary", x: 0, width: 1600, height: 900)
+        let secondaryMonitor = makeLayoutPlanTestMonitor(displayId: 2, name: "Secondary", x: 1600, width: 1600, height: 900)
+        let controller = makeLayoutPlanTestController(monitors: [primaryMonitor, secondaryMonitor])
+        guard let workspaceId = controller.workspaceManager.activeWorkspaceOrFirst(on: primaryMonitor.id)?.id
+        else {
+            Issue.record("Missing workspace for hidden-placement parity test")
+            return
+        }
+
+        controller.enableNiriLayout(maxWindowsPerColumn: 1)
+        await waitForLayoutPlanRefreshWork(on: controller)
+        controller.syncMonitorsToNiriEngine()
+
+        var tokens: [WindowToken] = []
+        for windowId in 921 ... 924 {
+            tokens.append(addLayoutPlanTestWindow(on: controller, workspaceId: workspaceId, windowId: windowId))
+        }
+
+        guard let engine = controller.niriEngine else {
+            Issue.record("Expected Niri engine for hidden-placement parity test")
+            return
+        }
+
+        let initialPlans = try await controller.niriLayoutHandler.layoutWithNiriEngine(
+            activeWorkspaces: [workspaceId]
+        )
+        controller.layoutRefreshController.executeLayoutPlans(initialPlans)
+
+        controller.workspaceManager.withNiriViewportState(for: workspaceId) { state in
+            state.viewOffsetPixels = .static(2500)
+        }
+
+        let gaps = LayoutGaps(
+            horizontal: CGFloat(controller.workspaceManager.gaps),
+            vertical: CGFloat(controller.workspaceManager.gaps),
+            outer: controller.workspaceManager.outerGaps
+        )
+        let workingFrame = controller.insetWorkingFrame(for: primaryMonitor)
+        let area = WorkingAreaContext(
+            workingFrame: workingFrame,
+            viewFrame: primaryMonitor.frame,
+            scale: controller.layoutRefreshController.backingScale(for: primaryMonitor)
+        )
+        let state = controller.workspaceManager.niriViewportState(for: workspaceId)
+        let (frames, hiddenHandles) = engine.calculateCombinedLayoutUsingPools(
+            in: workspaceId,
+            monitor: primaryMonitor,
+            gaps: gaps,
+            state: state,
+            workingArea: area,
+            animationTime: nil
+        )
+
+        guard let token = tokens.first(where: { hiddenHandles[$0] == .left }),
+              let canonicalFrame = engine.findNode(for: token)?.frame,
+              let hiddenFrame = frames[token],
+              let liveOrigin = controller.layoutRefreshController.liveFrameHideOrigin(
+                  for: canonicalFrame,
+                  monitor: primaryMonitor,
+                  side: .left,
+                  pid: token.pid
+              )
+        else {
+            Issue.record("Expected a hidden-left column and live hide origin for parity test")
+            return
+        }
+
+        #expect(hiddenFrame.minX == liveOrigin.x)
+        #expect(hiddenFrame.minY == liveOrigin.y)
     }
 
     @Test @MainActor func snapshotPlanUsesRemovalSeedForFallbackAndScrollParity() async throws {
@@ -536,7 +951,10 @@ private func hasHiddenVisibilityChange(_ changes: [LayoutVisibilityChange]) -> B
         }
 
         #expect(!plan.diff.frameChanges.contains(where: { $0.token == removedToken }))
-        #expect(plan.diff.frameChanges.contains(where: { $0.token == survivingToken }))
+        #expect(
+            plan.diff.frameChanges.contains(where: { $0.token == survivingToken }) ||
+                hasAnyVisibilityChange(plan.diff.visibilityChanges, token: survivingToken)
+        )
         #expect(plan.sessionPatch.rememberedFocusToken == survivingToken)
         #expect(plan.sessionPatch.viewportState?.selectedNodeId == survivingNodeId)
         #expect(hasNiriScrollDirective(plan.animationDirectives, workspaceId: workspaceId))

@@ -14,7 +14,7 @@ extension NiriLayoutEngine {
         for (colIdx, column) in root.columns.enumerated() {
             for child in column.children {
                 guard let window = child as? NiriWindow,
-                      let frame = window.frame else { continue }
+                      let frame = window.renderedFrame ?? window.frame else { continue }
 
                 if window.isFullscreen {
                     continue
@@ -45,7 +45,7 @@ extension NiriLayoutEngine {
         for column in root.columns {
             for child in column.children {
                 guard let window = child as? NiriWindow,
-                      let frame = window.frame else { continue }
+                      let frame = window.renderedFrame ?? window.frame else { continue }
 
                 if frame.contains(point) {
                     return window

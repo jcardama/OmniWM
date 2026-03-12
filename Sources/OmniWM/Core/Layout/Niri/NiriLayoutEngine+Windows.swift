@@ -42,7 +42,7 @@ extension NiriLayoutEngine {
                 }
             } else {
                 for window in column.windowNodes {
-                    if let windowFrame = window.frame {
+                    if let windowFrame = window.renderedFrame ?? window.frame {
                         let visibleWidth = min(windowFrame.maxX, workingFrame.maxX) - max(
                             windowFrame.minX,
                             workingFrame.minX

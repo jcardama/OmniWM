@@ -87,6 +87,10 @@ final class AXManager {
         lastAppliedFrames.removeValue(forKey: windowId)
     }
 
+    func lastAppliedFrame(for windowId: Int) -> CGRect? {
+        lastAppliedFrames[windowId]
+    }
+
     func clearInactiveWorkspaceWindows() {
         inactiveWorkspaceWindowIds.removeAll()
     }
