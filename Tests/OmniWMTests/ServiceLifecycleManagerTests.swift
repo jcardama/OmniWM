@@ -38,8 +38,8 @@ private func makeLifecycleWindow(windowId: Int = 101) -> AXWindowRef {
         let defaults = makeLifecycleTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "3", monitorAssignment: .numbered(2), isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+            WorkspaceConfiguration(name: "3", monitorAssignment: .secondary)
         ]
 
         let controller = WMController(settings: settings)
@@ -67,7 +67,7 @@ private func makeLifecycleWindow(windowId: Int = 101) -> AXWindowRef {
         )
 
         let sorted = Monitor.sortedByPosition(controller.workspaceManager.monitors)
-        guard let forcedTarget = MonitorDescription.sequenceNumber(2).resolveMonitor(sortedMonitors: sorted) else {
+        guard let forcedTarget = MonitorDescription.secondary.resolveMonitor(sortedMonitors: sorted) else {
             Issue.record("Failed to resolve forced monitor target")
             return
         }
@@ -81,8 +81,8 @@ private func makeLifecycleWindow(windowId: Int = 101) -> AXWindowRef {
         let defaults = makeLifecycleTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+            WorkspaceConfiguration(name: "2", monitorAssignment: .main)
         ]
 
         let controller = WMController(settings: settings)
@@ -131,8 +131,8 @@ private func makeLifecycleWindow(windowId: Int = 101) -> AXWindowRef {
         let defaults = makeLifecycleTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+            WorkspaceConfiguration(name: "2", monitorAssignment: .secondary)
         ]
 
         let controller = WMController(settings: settings)
@@ -164,7 +164,7 @@ private func makeLifecycleWindow(windowId: Int = 101) -> AXWindowRef {
             performPostUpdateActions: false
         )
 
-        #expect(controller.workspaceManager.activeWorkspace(on: newLeft.id)?.id == ws2)
+        #expect(controller.workspaceManager.activeWorkspace(on: newRight.id)?.id == ws2)
         #expect(controller.workspaceManager.niriViewportState(for: ws2).activeColumnIndex == 3)
         #expect(controller.workspaceManager.niriViewportState(for: ws2).selectedNodeId == selectedNodeId)
     }
@@ -173,7 +173,7 @@ private func makeLifecycleWindow(windowId: Int = 101) -> AXWindowRef {
         let defaults = makeLifecycleTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
         ]
 
         let controller = WMController(settings: settings)

@@ -34,14 +34,21 @@ private func makeRefreshTestWindow(windowId: Int = 101) -> AXWindowRef {
 }
 
 @MainActor
-private func makeRefreshTestController() -> WMController {
+private func makeRefreshTestController(
+    workspaceConfigurations: [WorkspaceConfiguration] = [
+        WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+        WorkspaceConfiguration(name: "2", monitorAssignment: .main)
+    ]
+) -> WMController {
     let operations = WindowFocusOperations(
         activateApp: { _ in },
         focusSpecificWindow: { _, _, _ in },
         raiseWindow: { _ in }
     )
+    let settings = SettingsStore(defaults: makeRefreshTestDefaults())
+    settings.workspaceConfigurations = workspaceConfigurations
     let controller = WMController(
-        settings: SettingsStore(defaults: makeRefreshTestDefaults()),
+        settings: settings,
         windowFocusOperations: operations
     )
     let monitor = makeRefreshTestMonitor()
@@ -210,18 +217,22 @@ private func makeTwoMonitorRefreshTestController() -> (
     primaryWorkspaceId: WorkspaceDescriptor.ID,
     secondaryWorkspaceId: WorkspaceDescriptor.ID
 ) {
-    let controller = makeRefreshTestController()
+    let controller = makeRefreshTestController(
+        workspaceConfigurations: [
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+            WorkspaceConfiguration(name: "2", monitorAssignment: .secondary)
+        ]
+    )
     let primaryMonitor = makeRefreshTestMonitor()
     let secondaryMonitor = makeRefreshTestMonitor(displayId: 2, name: "Secondary", x: 1920)
     controller.workspaceManager.applyMonitorConfigurationChange([primaryMonitor, secondaryMonitor])
 
     guard let primaryWorkspaceId = controller.workspaceManager.activeWorkspaceOrFirst(on: primaryMonitor.id)?.id,
-          let secondaryWorkspaceId = controller.workspaceManager.workspaceId(for: "2", createIfMissing: true)
+          let secondaryWorkspaceId = controller.workspaceManager.workspaceId(for: "2", createIfMissing: false)
     else {
         fatalError("Failed to create two-monitor test fixture")
     }
 
-    controller.workspaceManager.assignWorkspaceToMonitor(secondaryWorkspaceId, monitorId: secondaryMonitor.id)
     _ = controller.workspaceManager.setActiveWorkspace(secondaryWorkspaceId, on: secondaryMonitor.id)
     _ = controller.workspaceManager.setInteractionMonitor(primaryMonitor.id)
 
@@ -748,7 +759,7 @@ private func prepareNiriState(
         assertNoLegacyReasons(recorder)
     }
 
-    @Test @MainActor func moveCurrentWorkspaceToMonitorUsesImmediateRelayoutOnly() async {
+    @Test @MainActor func moveCurrentWorkspaceToForeignMonitorDoesNotRelayout() async {
         let fixture = makeTwoMonitorRefreshTestController()
         let recorder = RefreshEventRecorder()
         installRefreshSpies(on: fixture.controller, recorder: recorder)
@@ -756,13 +767,12 @@ private func prepareNiriState(
         fixture.controller.workspaceNavigationHandler.moveCurrentWorkspaceToMonitor(direction: .right)
         await waitForRefreshWork(on: fixture.controller)
 
-        #expect(recorder.relayoutEvents.map(\.0) == [.workspaceTransition])
-        #expect(recorder.relayoutEvents.map(\.1) == [.immediateRelayout])
+        #expect(recorder.relayoutEvents.isEmpty)
         #expect(recorder.fullRescanReasons.isEmpty)
         assertNoLegacyReasons(recorder)
     }
 
-    @Test @MainActor func moveCurrentWorkspaceToMonitorRelativeUsesImmediateRelayoutOnly() async {
+    @Test @MainActor func moveCurrentWorkspaceToForeignMonitorRelativeDoesNotRelayout() async {
         let fixture = makeTwoMonitorRefreshTestController()
         let recorder = RefreshEventRecorder()
         installRefreshSpies(on: fixture.controller, recorder: recorder)
@@ -770,13 +780,12 @@ private func prepareNiriState(
         fixture.controller.workspaceNavigationHandler.moveCurrentWorkspaceToMonitorRelative(previous: false)
         await waitForRefreshWork(on: fixture.controller)
 
-        #expect(recorder.relayoutEvents.map(\.0) == [.workspaceTransition])
-        #expect(recorder.relayoutEvents.map(\.1) == [.immediateRelayout])
+        #expect(recorder.relayoutEvents.isEmpty)
         #expect(recorder.fullRescanReasons.isEmpty)
         assertNoLegacyReasons(recorder)
     }
 
-    @Test @MainActor func swapCurrentWorkspaceWithMonitorUsesImmediateRelayoutOnly() async {
+    @Test @MainActor func swapCurrentWorkspaceWithMonitorDoesNotRelayoutAcrossFixedHomes() async {
         let fixture = makeTwoMonitorRefreshTestController()
         let recorder = RefreshEventRecorder()
         installRefreshSpies(on: fixture.controller, recorder: recorder)
@@ -784,8 +793,7 @@ private func prepareNiriState(
         fixture.controller.workspaceNavigationHandler.swapCurrentWorkspaceWithMonitor(direction: .right)
         await waitForRefreshWork(on: fixture.controller)
 
-        #expect(recorder.relayoutEvents.map(\.0) == [.workspaceTransition])
-        #expect(recorder.relayoutEvents.map(\.1) == [.immediateRelayout])
+        #expect(recorder.relayoutEvents.isEmpty)
         #expect(recorder.fullRescanReasons.isEmpty)
         assertNoLegacyReasons(recorder)
     }

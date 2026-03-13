@@ -106,7 +106,7 @@ extension SettingsExport {
             niriAlwaysCenterSingleColumn: true,
             niriSingleWindowAspectRatio: SingleWindowAspectRatio.ratio4x3.rawValue,
             niriColumnWidthPresets: [1.0 / 3.0, 0.5, 2.0 / 3.0],
-            workspaceConfigurations: [],
+            workspaceConfigurations: [WorkspaceConfiguration(name: "1", monitorAssignment: .main)],
             defaultLayoutType: LayoutType.niri.rawValue,
             bordersEnabled: false,
             borderWidth: 4.0,

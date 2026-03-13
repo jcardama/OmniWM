@@ -465,14 +465,8 @@ final class CommandHandler {
         }
 
         var configs = controller.settings.workspaceConfigurations
-        if let index = configs.firstIndex(where: { $0.name == workspaceName }) {
-            configs[index] = configs[index].with(layoutType: newLayout)
-        } else {
-            configs.append(WorkspaceConfiguration(
-                name: workspaceName,
-                layoutType: newLayout
-            ))
-        }
+        guard let index = configs.firstIndex(where: { $0.name == workspaceName }) else { return }
+        configs[index] = configs[index].with(layoutType: newLayout)
 
         controller.settings.workspaceConfigurations = configs
         controller.layoutRefreshController.requestRelayout(reason: .workspaceLayoutToggled)

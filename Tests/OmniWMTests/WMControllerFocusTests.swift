@@ -49,9 +49,13 @@ private final class NotificationValueBox<Value>: @unchecked Sendable {
 
 @MainActor
 private func makeFocusTestController(
-    windowFocusOperations: WindowFocusOperations
+    windowFocusOperations: WindowFocusOperations,
+    workspaceConfigurations: [WorkspaceConfiguration] = [
+        WorkspaceConfiguration(name: "1", monitorAssignment: .main)
+    ]
 ) -> (controller: WMController, workspaceId: WorkspaceDescriptor.ID, handle: WindowHandle) {
     let settings = SettingsStore(defaults: makeFocusTestDefaults())
+    settings.workspaceConfigurations = workspaceConfigurations
     let controller = WMController(settings: settings, windowFocusOperations: windowFocusOperations)
     let monitor = makeFocusTestMonitor()
     controller.workspaceManager.applyMonitorConfigurationChange([monitor])
@@ -79,18 +83,21 @@ private func makeTwoMonitorFocusController(
     secondaryWorkspaceId: WorkspaceDescriptor.ID
 ) {
     let settings = SettingsStore(defaults: makeFocusTestDefaults())
+    settings.workspaceConfigurations = [
+        WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+        WorkspaceConfiguration(name: "2", monitorAssignment: .secondary)
+    ]
     let controller = WMController(settings: settings, windowFocusOperations: windowFocusOperations)
     let primaryMonitor = makeFocusTestMonitor()
     let secondaryMonitor = makeFocusTestMonitor(displayId: 2, name: "Secondary", x: 1920)
     controller.workspaceManager.applyMonitorConfigurationChange([primaryMonitor, secondaryMonitor])
 
     guard let primaryWorkspaceId = controller.workspaceManager.activeWorkspaceOrFirst(on: primaryMonitor.id)?.id,
-          let secondaryWorkspaceId = controller.workspaceManager.workspaceId(for: "2", createIfMissing: true)
+          let secondaryWorkspaceId = controller.workspaceManager.workspaceId(for: "2", createIfMissing: false)
     else {
         fatalError("Expected two-monitor focus test fixture")
     }
 
-    controller.workspaceManager.assignWorkspaceToMonitor(secondaryWorkspaceId, monitorId: secondaryMonitor.id)
     _ = controller.workspaceManager.setActiveWorkspace(secondaryWorkspaceId, on: secondaryMonitor.id)
     _ = controller.workspaceManager.setInteractionMonitor(primaryMonitor.id)
 
@@ -183,32 +190,27 @@ private func waitForFocusRefresh(on controller: WMController) async {
             focusSpecificWindow: { _, _, _ in },
             raiseWindow: { _ in }
         )
-        let (controller, workspaceId, handle) = makeFocusTestController(windowFocusOperations: operations)
-        let secondaryMonitor = makeFocusTestMonitor(
-            displayId: 2,
-            name: "Secondary",
-            x: 1920
+        let fixture = makeTwoMonitorFocusController(windowFocusOperations: operations)
+        let controller = fixture.controller
+
+        let window1 = makeFocusTestWindow(windowId: 201)
+        let handle1Token = controller.workspaceManager.addWindow(
+            window1,
+            pid: getpid(),
+            windowId: window1.windowId,
+            to: fixture.primaryWorkspaceId
         )
-        controller.workspaceManager.applyMonitorConfigurationChange([
-            makeFocusTestMonitor(),
-            secondaryMonitor
-        ])
-
-        guard let workspace2 = controller.workspaceManager.workspaceId(for: "2", createIfMissing: true) else {
-            Issue.record("Failed to create secondary workspace")
-            return
-        }
-        #expect(controller.workspaceManager.setActiveWorkspace(workspace2, on: secondaryMonitor.id))
-
         let window2 = makeFocusTestWindow(windowId: 202)
         let handle2Token = controller.workspaceManager.addWindow(
             window2,
             pid: getpid(),
             windowId: window2.windowId,
-            to: workspace2
+            to: fixture.secondaryWorkspaceId
         )
-        guard let handle2 = controller.workspaceManager.handle(for: handle2Token) else {
-            Issue.record("Missing bridge handle for secondary window")
+        guard let handle1 = controller.workspaceManager.handle(for: handle1Token),
+              let handle2 = controller.workspaceManager.handle(for: handle2Token)
+        else {
+            Issue.record("Missing bridge handle for focus notification test")
             return
         }
 
@@ -246,19 +248,19 @@ private func waitForFocusRefresh(on controller: WMController) async {
         }
 
         _ = controller.workspaceManager.setManagedFocus(
-            handle,
-            in: workspaceId,
-            onMonitor: controller.workspaceManager.monitorId(for: workspaceId)
+            handle1,
+            in: fixture.primaryWorkspaceId,
+            onMonitor: fixture.primaryMonitor.id
         )
         _ = controller.workspaceManager.setManagedFocus(
             handle2,
-            in: workspace2,
-            onMonitor: secondaryMonitor.id
+            in: fixture.secondaryWorkspaceId,
+            onMonitor: fixture.secondaryMonitor.id
         )
 
         #expect(focusToken.value == handle2.id)
-        #expect(workspaceIdBox.value == workspace2)
-        #expect(monitorDisplayIdBox.value == secondaryMonitor.displayId)
+        #expect(workspaceIdBox.value == fixture.secondaryWorkspaceId)
+        #expect(monitorDisplayIdBox.value == fixture.secondaryMonitor.displayId)
     }
 
     @Test @MainActor func unmanagedAppActivationClearsManagedFocusState() {

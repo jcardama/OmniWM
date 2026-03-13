@@ -29,8 +29,13 @@ private func makeAXEventTestController(trackedGhosttyBundleId: String? = nil) ->
         focusSpecificWindow: { _, _, _ in },
         raiseWindow: { _ in }
     )
+    let settings = SettingsStore(defaults: makeAXEventTestDefaults())
+    settings.workspaceConfigurations = [
+        WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+        WorkspaceConfiguration(name: "2", monitorAssignment: .main)
+    ]
     let controller = WMController(
-        settings: SettingsStore(defaults: makeAXEventTestDefaults()),
+        settings: settings,
         windowFocusOperations: operations
     )
     if let trackedGhosttyBundleId {

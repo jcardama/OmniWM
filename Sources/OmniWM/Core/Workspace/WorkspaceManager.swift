@@ -559,6 +559,7 @@ final class WorkspaceManager {
             return existing
         }
         guard createIfMissing else { return nil }
+        guard configuredWorkspaceNames().contains(name) else { return nil }
         return createWorkspace(named: name)
     }
 
@@ -567,12 +568,9 @@ final class WorkspaceManager {
     }
 
     func workspaces(on monitorId: Monitor.ID) -> [WorkspaceDescriptor] {
-        guard let monitor = monitor(byId: monitorId) else { return [] }
-        let assigned = sortedWorkspaces().filter { workspace in
-            guard let workspaceMonitor = monitorForWorkspace(workspace.id) else { return false }
-            return workspaceMonitor.id == monitor.id
+        sortedWorkspaces().filter { workspace in
+            workspaceMonitorId(for: workspace.id) == monitorId
         }
-        return assigned
     }
 
     func primaryWorkspace() -> WorkspaceDescriptor? {
@@ -619,10 +617,9 @@ final class WorkspaceManager {
         if let active = activeWorkspace(on: monitorId) {
             return active
         }
-        guard let mon = monitor(byId: monitorId) else { return nil }
-        let stubId = getStubWorkspaceId(for: mon.id)
-        _ = setActiveWorkspaceInternal(stubId, on: mon.id, anchorPoint: mon.workspaceAnchorPoint)
-        return descriptor(for: stubId)
+        guard let defaultWorkspaceId = defaultVisibleWorkspaceId(on: monitorId) else { return nil }
+        _ = setActiveWorkspaceInternal(defaultWorkspaceId, on: monitorId)
+        return descriptor(for: defaultWorkspaceId)
     }
 
     func visibleWorkspaceIds() -> Set<WorkspaceDescriptor.ID> {
@@ -650,7 +647,7 @@ final class WorkspaceManager {
 
     func focusWorkspace(named name: String) -> (workspace: WorkspaceDescriptor, monitor: Monitor)? {
         ensureVisibleWorkspaces()
-        guard let workspaceId = workspaceId(for: name, createIfMissing: true) else { return nil }
+        guard let workspaceId = workspaceId(for: name, createIfMissing: false) else { return nil }
         guard let targetMonitor = monitorForWorkspace(workspaceId) else { return nil }
         guard setActiveWorkspace(workspaceId, on: targetMonitor.id) else { return nil }
         guard let workspace = descriptor(for: workspaceId) else { return nil }
@@ -658,17 +655,16 @@ final class WorkspaceManager {
     }
 
     func applySettings() {
-        ensurePersistentWorkspaces()
-        applyForcedAssignments()
+        synchronizeConfiguredWorkspaces()
         ensureVisibleWorkspaces()
-        reconcileForcedVisibleWorkspaces()
+        reconcileConfiguredVisibleWorkspaces()
     }
 
     func applyMonitorConfigurationChange(_ newMonitors: [Monitor]) {
         let restoreSnapshots = captureVisibleWorkspaceRestoreSnapshots()
         replaceMonitors(with: newMonitors)
         restoreVisibleWorkspacesAfterMonitorConfigurationChange(from: restoreSnapshots)
-        reconcileForcedVisibleWorkspaces()
+        reconcileConfiguredVisibleWorkspaces()
         reconcileInteractionMonitorState()
     }
 
@@ -698,8 +694,8 @@ final class WorkspaceManager {
     }
 
     func monitorForWorkspace(_ workspaceId: WorkspaceDescriptor.ID) -> Monitor? {
-        guard let monitorId = workspaceMonitorId(for: workspaceId) else { return monitors.first }
-        return monitor(byId: monitorId) ?? monitors.first
+        guard let monitorId = workspaceMonitorId(for: workspaceId) else { return nil }
+        return monitor(byId: monitorId)
     }
 
     func monitor(for workspaceId: WorkspaceDescriptor.ID) -> Monitor? {
@@ -877,12 +873,7 @@ final class WorkspaceManager {
             return false
         }
 
-        let stubId = getStubWorkspaceId(for: sourceMonitor.id)
-        _ = setActiveWorkspaceInternal(
-            stubId,
-            on: sourceMonitor.id,
-            anchorPoint: sourceMonitor.workspaceAnchorPoint
-        )
+        replaceVisibleWorkspaceIfNeeded(on: sourceMonitor.id)
 
         return true
     }
@@ -926,10 +917,10 @@ final class WorkspaceManager {
 
     func summonWorkspace(named workspaceName: String, to focusedMonitorId: Monitor.ID) -> WorkspaceDescriptor? {
         guard let workspaceId = workspaceId(for: workspaceName, createIfMissing: false) else { return nil }
-        guard let focusedMonitor = monitor(byId: focusedMonitorId) else { return nil }
+        guard let targetMonitor = monitorForWorkspace(workspaceId) else { return nil }
 
-        if visibleWorkspaceId(on: focusedMonitor.id) == workspaceId { return nil }
-        guard setActiveWorkspace(workspaceId, on: focusedMonitor.id) else { return nil }
+        if visibleWorkspaceId(on: targetMonitor.id) == workspaceId { return nil }
+        guard setActiveWorkspace(workspaceId, on: targetMonitor.id) else { return nil }
         return descriptor(for: workspaceId)
     }
 
@@ -955,6 +946,7 @@ final class WorkspaceManager {
 
     func assignWorkspaceToMonitor(_ workspaceId: WorkspaceDescriptor.ID, monitorId: Monitor.ID) {
         guard let monitor = monitor(byId: monitorId) else { return }
+        guard isValidAssignment(workspaceId: workspaceId, monitorId: monitor.id) else { return }
         updateWorkspace(workspaceId) { $0.assignedMonitorPoint = monitor.workspaceAnchorPoint }
     }
 
@@ -1005,14 +997,10 @@ final class WorkspaceManager {
     }
 
     func garbageCollectUnusedWorkspaces(focusedWorkspaceId: WorkspaceDescriptor.ID?) {
-        let persistent = Set(settings.persistentWorkspaceNames())
-        let visible = visibleWorkspaceIds()
+        let configured = Set(configuredWorkspaceNames())
         var toRemove: [WorkspaceDescriptor.ID] = []
         for (id, workspace) in workspacesById {
-            if persistent.contains(workspace.name) {
-                continue
-            }
-            if visible.contains(id) {
+            if configured.contains(workspace.name) {
                 continue
             }
             if focusedWorkspaceId == id {
@@ -1201,17 +1189,52 @@ final class WorkspaceManager {
         return sorted
     }
 
-    private func ensurePersistentWorkspaces() {
-        for name in settings.persistentWorkspaceNames() {
-            _ = workspaceId(for: name, createIfMissing: true)
-        }
+    private func configuredWorkspaceNames() -> [String] {
+        settings.configuredWorkspaceNames()
     }
 
-    private func applyForcedAssignments() {
-        let assignments = settings.workspaceToMonitorAssignments()
-        for (name, descriptions) in assignments {
-            guard !descriptions.isEmpty else { continue }
+    private func synchronizeConfiguredWorkspaces() {
+        let configuredNames = configuredWorkspaceNames()
+        let configuredSet = Set(configuredNames)
+
+        for name in configuredNames {
             _ = workspaceId(for: name, createIfMissing: true)
+        }
+
+        let toRemove = workspacesById.compactMap { workspaceId, workspace -> WorkspaceDescriptor.ID? in
+            guard !configuredSet.contains(workspace.name) else { return nil }
+            guard windows.windows(in: workspaceId).isEmpty else { return nil }
+            return workspaceId
+        }
+        removeWorkspaces(toRemove)
+    }
+
+    private func removeWorkspaces(_ ids: [WorkspaceDescriptor.ID]) {
+        guard !ids.isEmpty else { return }
+
+        let toRemove = Set(ids)
+        for id in ids {
+            workspacesById.removeValue(forKey: id)
+            sessionState.workspaceSessions.removeValue(forKey: id)
+            sessionState.focus.lastFocusedByWorkspace.removeValue(forKey: id)
+        }
+
+        _cachedSortedWorkspaces = nil
+        workspaceIdByName = workspaceIdByName.filter { !toRemove.contains($0.value) }
+
+        for monitorId in sessionState.monitorSessions.keys {
+            updateMonitorSession(monitorId) { session in
+                if let visibleWorkspaceId = session.visibleWorkspaceId,
+                   toRemove.contains(visibleWorkspaceId)
+                {
+                    session.visibleWorkspaceId = nil
+                }
+                if let previousVisibleWorkspaceId = session.previousVisibleWorkspaceId,
+                   toRemove.contains(previousVisibleWorkspaceId)
+                {
+                    session.previousVisibleWorkspaceId = nil
+                }
+            }
         }
     }
 
@@ -1234,30 +1257,41 @@ final class WorkspaceManager {
         }
     }
 
-    private func reconcileForcedVisibleWorkspaces() {
-        let assignments = settings.workspaceToMonitorAssignments()
-        guard !assignments.isEmpty else { return }
+    private func reconcileConfiguredVisibleWorkspaces(notify: Bool = true) {
+        var changed = false
 
-        let sortedMonitors = Monitor.sortedByPosition(monitors)
-        var forcedTargets: [WorkspaceDescriptor.ID: Monitor] = [:]
-        for (name, descriptions) in assignments {
-            guard let workspaceId = workspaceIdByName[name] else { continue }
-            guard let target = descriptions.compactMap({ $0.resolveMonitor(sortedMonitors: sortedMonitors) }).first
-            else {
+        for monitor in Monitor.sortedByPosition(monitors) {
+            let assigned = workspaces(on: monitor.id)
+            guard !assigned.isEmpty else {
+                if visibleWorkspaceId(on: monitor.id) != nil || previousVisibleWorkspaceId(on: monitor.id) != nil {
+                    updateMonitorSession(monitor.id) { session in
+                        session.visibleWorkspaceId = nil
+                        session.previousVisibleWorkspaceId = nil
+                    }
+                    changed = true
+                }
                 continue
             }
-            forcedTargets[workspaceId] = target
+
+            if let currentVisibleId = visibleWorkspaceId(on: monitor.id),
+               assigned.contains(where: { $0.id == currentVisibleId })
+            {
+                continue
+            }
+
+            guard let defaultWorkspaceId = assigned.first?.id else { continue }
+            if setActiveWorkspaceInternal(
+                defaultWorkspaceId,
+                on: monitor.id,
+                anchorPoint: monitor.workspaceAnchorPoint,
+                notify: false
+            ) {
+                changed = true
+            }
         }
 
-        for (workspaceId, forcedMonitor) in forcedTargets {
-            guard let currentMonitorId = monitorIdShowingWorkspace(workspaceId) else { continue }
-            if currentMonitorId != forcedMonitor.id {
-                _ = setActiveWorkspaceInternal(
-                    workspaceId,
-                    on: forcedMonitor.id,
-                    anchorPoint: forcedMonitor.workspaceAnchorPoint
-                )
-            }
+        if notify, changed {
+            notifySessionStateChanged()
         }
     }
 
@@ -1273,43 +1307,21 @@ final class WorkspaceManager {
         )
         guard !assignments.isEmpty else { return }
 
-        let forcedWorkspaceIds = forcedWorkspaceIdsForCurrentSettings()
-        let forcedMonitorIds = forcedMonitorIdsForCurrentSettings()
         let sortedMonitors = Monitor.sortedByPosition(monitors)
         var restoredWorkspaces: Set<WorkspaceDescriptor.ID> = []
 
         for monitor in sortedMonitors {
             guard let workspaceId = assignments[monitor.id] else { continue }
-            guard !forcedWorkspaceIds.contains(workspaceId) else { continue }
-            guard !forcedMonitorIds.contains(monitor.id) else { continue }
+            guard workspaceMonitorId(for: workspaceId) == monitor.id else { continue }
             guard restoredWorkspaces.insert(workspaceId).inserted else { continue }
             _ = setActiveWorkspaceInternal(
                 workspaceId,
                 on: monitor.id,
                 anchorPoint: monitor.workspaceAnchorPoint,
-                updateInteractionMonitor: false
+                updateInteractionMonitor: false,
+                notify: false
             )
         }
-    }
-
-    private func forcedWorkspaceIdsForCurrentSettings() -> Set<WorkspaceDescriptor.ID> {
-        let assignmentNames = settings.workspaceToMonitorAssignments().keys
-        return Set(assignmentNames.compactMap { workspaceId(named: $0) })
-    }
-
-    private func forcedMonitorIdsForCurrentSettings() -> Set<Monitor.ID> {
-        let assignments = settings.workspaceToMonitorAssignments()
-        let sortedMonitors = Monitor.sortedByPosition(monitors)
-        var forcedMonitorIds: Set<Monitor.ID> = []
-
-        for descriptions in assignments.values {
-            guard let monitor = descriptions.compactMap({ $0.resolveMonitor(sortedMonitors: sortedMonitors) }).first else {
-                continue
-            }
-            forcedMonitorIds.insert(monitor.id)
-        }
-
-        return forcedMonitorIds
     }
 
     private func ensureVisibleWorkspaces(previousMonitors: [Monitor]? = nil) {
@@ -1381,91 +1393,50 @@ final class WorkspaceManager {
         for newMonitor in sortedNewMonitors {
             if let oldId = newToOld[newMonitor.id],
                let existingWorkspaceId = oldForward[oldId],
+               workspaceMonitorId(for: existingWorkspaceId) == newMonitor.id,
                setActiveWorkspaceInternal(
                    existingWorkspaceId,
                    on: newMonitor.id,
-                   anchorPoint: newMonitor.workspaceAnchorPoint
+                   anchorPoint: newMonitor.workspaceAnchorPoint,
+                   notify: false
                )
             {
                 continue
             }
-            let stubId = getStubWorkspaceId(for: newMonitor.id)
-            _ = setActiveWorkspaceInternal(
-                stubId,
-                on: newMonitor.id,
-                anchorPoint: newMonitor.workspaceAnchorPoint
-            )
+            if let defaultWorkspaceId = defaultVisibleWorkspaceId(on: newMonitor.id) {
+                _ = setActiveWorkspaceInternal(
+                    defaultWorkspaceId,
+                    on: newMonitor.id,
+                    anchorPoint: newMonitor.workspaceAnchorPoint,
+                    notify: false
+                )
+            }
         }
 
         notifySessionStateChanged()
     }
 
-    private func getStubWorkspaceId(for monitorId: Monitor.ID) -> WorkspaceDescriptor.ID {
-        guard monitor(byId: monitorId) != nil else {
-            return getFallbackWorkspaceId()
-        }
-
-        if let prevId = previousVisibleWorkspaceId(on: monitorId),
-           let prev = descriptor(for: prevId),
-           !visibleWorkspaceIds().contains(prevId),
-           forceAssignedMonitor(for: prev.name) == nil,
-           workspaceMonitorId(for: prevId) == monitorId
-        {
-            return prevId
-        }
-
-        // Choose stub candidates in deterministic workspace order to avoid relaunch variance.
-        if let candidate = sortedWorkspaces().first(where: { workspace in
-            guard !visibleWorkspaceIds().contains(workspace.id) else { return false }
-            guard forceAssignedMonitor(for: workspace.name) == nil else { return false }
-            guard let candidateMonitorId = workspaceMonitorId(for: workspace.id) else { return false }
-            return candidateMonitorId == monitorId
-        }) {
-            return candidate.id
-        }
-
-        let persistent = Set(settings.persistentWorkspaceNames())
-        var idx = 1
-        while idx < 10000 {
-            let name = String(idx)
-            if persistent.contains(name) {
-                idx += 1
-                continue
-            }
-            if let forced = forceAssignedMonitor(for: name),
-               forced.id != monitorId
-            {
-                idx += 1
-                continue
-            }
-            if let existingId = workspaceIdByName[name] {
-                if !visibleWorkspaceIds().contains(existingId), windows.windows(in: existingId).isEmpty {
-                    return existingId
-                }
-            } else if let newId = createWorkspace(named: name) {
-                return newId
-            }
-            idx += 1
-        }
-
-        if let fallback = createWorkspace(named: UUID().uuidString) {
-            return fallback
-        }
-        return getFallbackWorkspaceId()
+    private func defaultVisibleWorkspaceId(on monitorId: Monitor.ID) -> WorkspaceDescriptor.ID? {
+        let assigned = workspaces(on: monitorId)
+        guard !assigned.isEmpty else { return nil }
+        return assigned.first?.id
     }
 
-    private func getFallbackWorkspaceId() -> WorkspaceDescriptor.ID {
-        if let existing = workspacesById.values.first {
-            return existing.id
+    private func replaceVisibleWorkspaceIfNeeded(on monitorId: Monitor.ID) {
+        guard let monitor = monitor(byId: monitorId) else { return }
+        if let defaultWorkspaceId = defaultVisibleWorkspaceId(on: monitor.id) {
+            _ = setActiveWorkspaceInternal(
+                defaultWorkspaceId,
+                on: monitor.id,
+                anchorPoint: monitor.workspaceAnchorPoint
+            )
+        } else {
+            updateMonitorSession(monitor.id) { session in
+                session.visibleWorkspaceId = nil
+                session.previousVisibleWorkspaceId = nil
+            }
+            notifySessionStateChanged()
         }
-        if let fallback = createWorkspace(named: "1") {
-            return fallback
-        }
-        let workspace = WorkspaceDescriptor(name: "fallback")
-        workspacesById[workspace.id] = workspace
-        workspaceIdByName[workspace.name] = workspace.id
-        _cachedSortedWorkspaces = nil
-        return workspace.id
     }
 
     private func workspaceMonitorId(for workspaceId: WorkspaceDescriptor.ID) -> Monitor.ID? {
@@ -1473,16 +1444,7 @@ final class WorkspaceManager {
         if let forced = forceAssignedMonitor(for: workspace.name) {
             return forced.id
         }
-        if let visibleMonitorId = monitorIdShowingWorkspace(workspaceId) {
-            return visibleMonitorId
-        }
-        if let assigned = workspace.assignedMonitorPoint {
-            if let exact = monitors.first(where: { $0.workspaceAnchorPoint == assigned }) {
-                return exact.id
-            }
-            return assigned.monitorApproximation(in: monitors)?.id
-        }
-        return monitors.first(where: { $0.isMain })?.id ?? monitors.first?.id
+        return monitorIdShowingWorkspace(workspaceId)
     }
 
     private func forceAssignedMonitor(for workspaceName: String) -> Monitor? {
@@ -1494,10 +1456,11 @@ final class WorkspaceManager {
 
     private func isValidAssignment(workspaceId: WorkspaceDescriptor.ID, monitorId: Monitor.ID) -> Bool {
         guard let workspace = descriptor(for: workspaceId) else { return false }
+        guard configuredWorkspaceNames().contains(workspace.name) else { return false }
         if let forced = forceAssignedMonitor(for: workspace.name) {
             return forced.id == monitorId
         }
-        return true
+        return false
     }
 
     private func setActiveWorkspaceInternal(
@@ -1562,6 +1525,8 @@ final class WorkspaceManager {
 
     private func createWorkspace(named name: String) -> WorkspaceDescriptor.ID? {
         guard case let .success(parsed) = WorkspaceName.parse(name) else { return nil }
+        guard WorkspaceConfiguration.allowedNames.contains(parsed.raw) else { return nil }
+        guard configuredWorkspaceNames().contains(parsed.raw) else { return nil }
         let workspace = WorkspaceDescriptor(name: parsed.raw)
         workspacesById[workspace.id] = workspace
         workspaceIdByName[workspace.name] = workspace.id

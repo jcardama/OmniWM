@@ -52,14 +52,22 @@ private func addWorkspaceManagerTestHandle(
     return handle
 }
 
+private func workspaceConfigurations(
+    _ assignments: [(String, MonitorAssignment)]
+) -> [WorkspaceConfiguration] {
+    assignments.map { name, assignment in
+        WorkspaceConfiguration(name: name, monitorAssignment: assignment)
+    }
+}
+
 @Suite struct WorkspaceManagerTests {
     @Test @MainActor func equalDistanceRemapUsesDeterministicTieBreak() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
 
@@ -114,13 +122,60 @@ private func addWorkspaceManagerTestHandle(
         #expect(manager.adjacentMonitor(from: left.id, direction: .left, wrapAround: true)?.id == right.id)
     }
 
-    @Test @MainActor func setActiveWorkspaceTracksInteractionMonitorOwnership() {
+    @Test @MainActor func workspaceIdsOutsideConfiguredSetAreNotSynthesized() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
         ]
+
+        let manager = WorkspaceManager(settings: settings)
+        let monitor = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Main", x: 0, y: 0)
+        manager.applyMonitorConfigurationChange([monitor])
+
+        #expect(manager.workspaceId(for: "1", createIfMissing: true) != nil)
+        #expect(manager.workspaceId(for: "2", createIfMissing: true) == nil)
+        #expect(manager.workspaceId(for: "10", createIfMissing: true) == nil)
+    }
+
+    @Test @MainActor func unresolvedSpecificDisplayLeavesMonitorUnmanagedUntilTargetAppears() {
+        let defaults = makeWorkspaceManagerTestDefaults()
+        let settings = SettingsStore(defaults: defaults)
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .specificDisplay(OutputId(displayId: 300, name: "Detached")))
+        ])
+
+        let manager = WorkspaceManager(settings: settings)
+        let main = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Main", x: 0, y: 0)
+        let side = makeWorkspaceManagerTestMonitor(displayId: 20, name: "Side", x: 1920, y: 0)
+        manager.applyMonitorConfigurationChange([main, side])
+
+        guard let ws1 = manager.workspaceId(for: "1", createIfMissing: true),
+              let ws2 = manager.workspaceId(for: "2", createIfMissing: true)
+        else {
+            Issue.record("Failed to create expected workspaces")
+            return
+        }
+
+        #expect(manager.activeWorkspace(on: main.id)?.id == ws1)
+        #expect(manager.activeWorkspace(on: side.id) == nil)
+        #expect(manager.monitorId(for: ws2) == nil)
+
+        let detached = makeWorkspaceManagerTestMonitor(displayId: 300, name: "Detached", x: 3840, y: 0)
+        manager.applyMonitorConfigurationChange([main, side, detached])
+
+        #expect(manager.activeWorkspace(on: detached.id)?.id == ws2)
+        #expect(manager.monitorId(for: ws2) == detached.id)
+    }
+
+    @Test @MainActor func setActiveWorkspaceTracksInteractionMonitorOwnership() {
+        let defaults = makeWorkspaceManagerTestDefaults()
+        let settings = SettingsStore(defaults: defaults)
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let left = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Left", x: 0, y: 0)
@@ -143,13 +198,13 @@ private func addWorkspaceManagerTestHandle(
         #expect(manager.activeWorkspace(on: right.id)?.id == ws2)
     }
 
-    @Test @MainActor func moveWorkspaceToMonitorUpdatesVisibleAndPreviousWorkspaceState() {
+    @Test @MainActor func moveWorkspaceToForeignMonitorIsRejectedWhenHomeMonitorDiffers() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let left = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Left", x: 0, y: 0)
@@ -165,21 +220,21 @@ private func addWorkspaceManagerTestHandle(
         #expect(manager.setActiveWorkspace(ws1, on: left.id))
         #expect(manager.setActiveWorkspace(ws2, on: right.id))
 
-        #expect(manager.moveWorkspaceToMonitor(ws1, to: right.id))
+        #expect(manager.moveWorkspaceToMonitor(ws1, to: right.id) == false)
         #expect(manager.interactionMonitorId == right.id)
         #expect(manager.previousInteractionMonitorId == left.id)
-        #expect(manager.activeWorkspace(on: right.id)?.id == ws1)
-        #expect(manager.previousWorkspace(on: right.id)?.id == ws2)
-        #expect(manager.activeWorkspace(on: left.id)?.id != ws1)
+        #expect(manager.activeWorkspace(on: left.id)?.id == ws1)
+        #expect(manager.activeWorkspace(on: right.id)?.id == ws2)
+        #expect(manager.previousWorkspace(on: right.id)?.id == nil)
     }
 
     @Test @MainActor func beginManagedFocusRequestOnlyMutatesPendingState() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let left = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Left", x: 0, y: 0)
@@ -213,10 +268,10 @@ private func addWorkspaceManagerTestHandle(
     @Test @MainActor func confirmManagedFocusAtomicallyCommitsOwnerState() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let left = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Left", x: 0, y: 0)
@@ -258,7 +313,7 @@ private func addWorkspaceManagerTestHandle(
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
         ]
 
         let manager = WorkspaceManager(settings: settings)
@@ -294,7 +349,7 @@ private func addWorkspaceManagerTestHandle(
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
         ]
 
         let manager = WorkspaceManager(settings: settings)
@@ -331,7 +386,7 @@ private func addWorkspaceManagerTestHandle(
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
         ]
 
         let manager = WorkspaceManager(settings: settings)
@@ -405,7 +460,7 @@ private func addWorkspaceManagerTestHandle(
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
         ]
 
         let manager = WorkspaceManager(settings: settings)
@@ -434,7 +489,7 @@ private func addWorkspaceManagerTestHandle(
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
         ]
 
         let manager = WorkspaceManager(settings: settings)
@@ -474,10 +529,10 @@ private func addWorkspaceManagerTestHandle(
     @Test @MainActor func monitorReconnectPrefersFocusedWorkspaceMonitorForInteractionState() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let left = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Left", x: 0, y: 0)
@@ -507,10 +562,10 @@ private func addWorkspaceManagerTestHandle(
     @Test @MainActor func removeWindowsForAppClearsFocusedAndRememberedHandles() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let left = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Left", x: 0, y: 0)
@@ -541,13 +596,13 @@ private func addWorkspaceManagerTestHandle(
         #expect(manager.resolveWorkspaceFocus(in: ws2) == nil)
     }
 
-    @Test @MainActor func swapWorkspacesMovesVisibleAndAssignedWorkspaceStateTogether() {
+    @Test @MainActor func swapWorkspacesAcrossHomeMonitorsIsRejected() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let left = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Left", x: 0, y: 0)
@@ -562,22 +617,23 @@ private func addWorkspaceManagerTestHandle(
 
         #expect(manager.setActiveWorkspace(ws1, on: left.id))
         #expect(manager.setActiveWorkspace(ws2, on: right.id))
-        #expect(manager.swapWorkspaces(ws1, on: left.id, with: ws2, on: right.id))
-        #expect(manager.activeWorkspace(on: left.id)?.id == ws2)
-        #expect(manager.previousWorkspace(on: left.id)?.id == ws1)
-        #expect(manager.activeWorkspace(on: right.id)?.id == ws1)
-        #expect(manager.previousWorkspace(on: right.id)?.id == ws2)
-        #expect(manager.monitorId(for: ws1) == right.id)
-        #expect(manager.monitorId(for: ws2) == left.id)
+        #expect(manager.swapWorkspaces(ws1, on: left.id, with: ws2, on: right.id) == false)
+        #expect(manager.activeWorkspace(on: left.id)?.id == ws1)
+        #expect(manager.previousWorkspace(on: left.id)?.id == nil)
+        #expect(manager.activeWorkspace(on: right.id)?.id == ws2)
+        #expect(manager.previousWorkspace(on: right.id)?.id == nil)
+        #expect(manager.monitorId(for: ws1) == left.id)
+        #expect(manager.monitorId(for: ws2) == right.id)
     }
 
-    @Test @MainActor func summonWorkspaceMovesVisibleOwnershipToTargetMonitor() {
+    @Test @MainActor func summonWorkspaceActivatesOnHomeMonitorInsteadOfTargetMonitor() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary),
+            ("3", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let left = makeWorkspaceManagerTestMonitor(displayId: 10, name: "Left", x: 0, y: 0)
@@ -585,28 +641,30 @@ private func addWorkspaceManagerTestHandle(
         manager.applyMonitorConfigurationChange([left, right])
 
         guard let ws1 = manager.workspaceId(for: "1", createIfMissing: true),
-              let ws2 = manager.workspaceId(for: "2", createIfMissing: true) else {
+              let ws2 = manager.workspaceId(for: "2", createIfMissing: true),
+              let ws3 = manager.workspaceId(for: "3", createIfMissing: true)
+        else {
             Issue.record("Failed to create workspaces")
             return
         }
 
         #expect(manager.setActiveWorkspace(ws1, on: left.id))
-        #expect(manager.setActiveWorkspace(ws2, on: right.id))
+        #expect(manager.setActiveWorkspace(ws3, on: right.id))
         #expect(manager.setInteractionMonitor(left.id))
         #expect(manager.summonWorkspace(ws2, to: left.id))
-        #expect(manager.activeWorkspace(on: left.id)?.id == ws2)
-        #expect(manager.previousWorkspace(on: left.id)?.id == ws1)
-        #expect(manager.monitorId(for: ws2) == left.id)
-        #expect(manager.interactionMonitorId == left.id)
-        #expect(manager.activeWorkspace(on: right.id)?.id != ws2)
+        #expect(manager.activeWorkspace(on: left.id)?.id == ws1)
+        #expect(manager.activeWorkspace(on: right.id)?.id == ws2)
+        #expect(manager.previousWorkspace(on: right.id)?.id == ws3)
+        #expect(manager.monitorId(for: ws2) == right.id)
+        #expect(manager.interactionMonitorId == right.id)
     }
 
     @Test @MainActor func viewportStatePersistsAcrossWorkspaceTransitions() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+            WorkspaceConfiguration(name: "2", monitorAssignment: .main)
         ]
 
         let manager = WorkspaceManager(settings: settings)
@@ -632,10 +690,10 @@ private func addWorkspaceManagerTestHandle(
     @Test @MainActor func applyMonitorConfigurationChangeKeepsForcedWorkspaceAuthoritativeAfterRestore() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "3", monitorAssignment: .numbered(2), isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("3", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let oldLeft = makeWorkspaceManagerTestMonitor(displayId: 100, name: "L", x: 0, y: 0)
@@ -656,7 +714,7 @@ private func addWorkspaceManagerTestHandle(
         manager.applyMonitorConfigurationChange([newLeft, newRight])
 
         let sorted = Monitor.sortedByPosition(manager.monitors)
-        guard let forcedTarget = MonitorDescription.sequenceNumber(2).resolveMonitor(sortedMonitors: sorted) else {
+        guard let forcedTarget = MonitorDescription.secondary.resolveMonitor(sortedMonitors: sorted) else {
             Issue.record("Failed to resolve forced monitor target")
             return
         }
@@ -669,10 +727,10 @@ private func addWorkspaceManagerTestHandle(
     @Test @MainActor func applyMonitorConfigurationChangePreservesViewportStateOnReconnect() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let oldLeft = makeWorkspaceManagerTestMonitor(displayId: 100, name: "L", x: 0, y: 0)
@@ -698,7 +756,7 @@ private func addWorkspaceManagerTestHandle(
         let newRight = makeWorkspaceManagerTestMonitor(displayId: 100, name: "L", x: 1920, y: 0)
         manager.applyMonitorConfigurationChange([newLeft, newRight])
 
-        #expect(manager.activeWorkspace(on: newLeft.id)?.id == ws2)
+        #expect(manager.activeWorkspace(on: newRight.id)?.id == ws2)
         #expect(manager.niriViewportState(for: ws2).activeColumnIndex == 3)
         #expect(manager.niriViewportState(for: ws2).selectedNodeId == selectedNodeId)
     }
@@ -706,10 +764,10 @@ private func addWorkspaceManagerTestHandle(
     @Test @MainActor func applyMonitorConfigurationChangeClearsInvalidPreviousInteractionMonitor() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let left = makeWorkspaceManagerTestMonitor(displayId: 100, name: "Left", x: 0, y: 0)
@@ -735,10 +793,10 @@ private func addWorkspaceManagerTestHandle(
     @Test @MainActor func applyMonitorConfigurationChangeNormalizesInvalidInteractionMonitor() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
-        settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
-        ]
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("2", .secondary)
+        ])
 
         let manager = WorkspaceManager(settings: settings)
         let left = makeWorkspaceManagerTestMonitor(displayId: 100, name: "Left", x: 0, y: 0)
@@ -755,11 +813,43 @@ private func addWorkspaceManagerTestHandle(
         #expect(manager.previousInteractionMonitorId == nil)
     }
 
+    @Test @MainActor func removingVisibleWorkspaceFallsBackToLowestAssignedIdOnMonitor() {
+        let defaults = makeWorkspaceManagerTestDefaults()
+        let settings = SettingsStore(defaults: defaults)
+        settings.workspaceConfigurations = workspaceConfigurations([
+            ("1", .main),
+            ("3", .main)
+        ])
+
+        let manager = WorkspaceManager(settings: settings)
+        let monitor = makeWorkspaceManagerTestMonitor(displayId: 100, name: "Main", x: 0, y: 0)
+        manager.applyMonitorConfigurationChange([monitor])
+
+        guard let ws1 = manager.workspaceId(for: "1", createIfMissing: true),
+              let ws3 = manager.workspaceId(for: "3", createIfMissing: true)
+        else {
+            Issue.record("Failed to create expected workspaces")
+            return
+        }
+
+        #expect(manager.activeWorkspace(on: monitor.id)?.id == ws1)
+        #expect(manager.setActiveWorkspace(ws3, on: monitor.id))
+        #expect(manager.activeWorkspace(on: monitor.id)?.id == ws3)
+
+        settings.workspaceConfigurations = [
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
+        ]
+        manager.applySettings()
+
+        #expect(manager.activeWorkspace(on: monitor.id)?.id == ws1)
+        #expect(manager.workspaceId(named: "3") == nil)
+    }
+
     @Test @MainActor func applySessionPatchCommitsViewportAndRememberedFocusAtomically() {
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
         ]
 
         let manager = WorkspaceManager(settings: settings)
@@ -795,8 +885,8 @@ private func addWorkspaceManagerTestHandle(
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true),
-            WorkspaceConfiguration(name: "2", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+            WorkspaceConfiguration(name: "2", monitorAssignment: .main)
         ]
 
         let manager = WorkspaceManager(settings: settings)
@@ -852,7 +942,7 @@ private func addWorkspaceManagerTestHandle(
         let defaults = makeWorkspaceManagerTestDefaults()
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "1", monitorAssignment: .any, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
         ]
 
         let manager = WorkspaceManager(settings: settings)

@@ -466,7 +466,7 @@ private func makeSettingsTestMonitor(
     @Test func sameEpochLegacyWorkspaceKeysAreIgnoredOnImportAndDroppedOnReexport() throws {
         var export = SettingsExport.defaults()
         export.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "ws1", monitorAssignment: .main, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
         ]
 
         let encoded = try SettingsExport.makeEncoder().encode(export)
@@ -618,9 +618,9 @@ private func makeSettingsTestMonitor(
 
         let settings = SettingsStore(defaults: defaults)
 
-        #expect(settings.workspaceConfigurations.isEmpty)
-        #expect(settings.persistentWorkspaceNames().isEmpty)
-        #expect(settings.workspaceToMonitorAssignments().isEmpty)
+        #expect(settings.workspaceConfigurations.map(\.name) == ["1"])
+        #expect(settings.configuredWorkspaceNames() == ["1"])
+        #expect(settings.workspaceToMonitorAssignments().keys.sorted() == ["1"])
     }
 
     @Test func savingWorkspaceConfigurationsDoesNotRewriteLegacyWorkspaceKeys() {
@@ -630,13 +630,48 @@ private func makeSettingsTestMonitor(
 
         let settings = SettingsStore(defaults: defaults)
         settings.workspaceConfigurations = [
-            WorkspaceConfiguration(name: "ws1", monitorAssignment: .main, isPersistent: true)
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
         ]
 
         #expect(defaults.string(forKey: "settings.persistentWorkspaces") == "ws1,ws2")
         #expect(defaults.string(forKey: "settings.workspaceAssignments") == "ws1=Studio Display")
-        #expect(settings.persistentWorkspaceNames() == ["ws1"])
+        #expect(settings.configuredWorkspaceNames() == ["1"])
         #expect(defaults.data(forKey: "settings.workspaceConfigurations") != nil)
+    }
+
+    @Test func workspaceConfigurationsRoundTripSpecificDisplayAssignments() {
+        let defaults = makeTestDefaults()
+        let settings = SettingsStore(defaults: defaults)
+        let output = OutputId(displayId: 777, name: "Studio Display")
+
+        settings.workspaceConfigurations = [
+            WorkspaceConfiguration(
+                name: "2",
+                displayName: "Code",
+                monitorAssignment: .specificDisplay(output),
+                layoutType: .dwindle
+            )
+        ]
+
+        let reloaded = SettingsStore(defaults: defaults)
+        #expect(reloaded.workspaceConfigurations == settings.workspaceConfigurations)
+        #expect(reloaded.workspaceToMonitorAssignments()["2"] == [.output(output)])
+    }
+
+    @Test func settingsStoreNormalizesWorkspaceConfigurationsToConfiguredNumericIds() {
+        let defaults = makeTestDefaults()
+        let rawConfigurations = [
+            WorkspaceConfiguration(name: "2", monitorAssignment: .main),
+            WorkspaceConfiguration(name: "10", monitorAssignment: .main),
+            WorkspaceConfiguration(name: "2", displayName: "Duplicate", monitorAssignment: .secondary),
+            WorkspaceConfiguration(name: "abc", monitorAssignment: .main)
+        ]
+        defaults.set(try? JSONEncoder().encode(rawConfigurations), forKey: "settings.workspaceConfigurations")
+
+        let settings = SettingsStore(defaults: defaults)
+
+        #expect(settings.workspaceConfigurations.map(\.name) == ["2"])
+        #expect(settings.workspaceConfigurations.first?.monitorAssignment == .main)
     }
 }
 

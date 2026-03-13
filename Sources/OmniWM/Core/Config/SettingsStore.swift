@@ -484,18 +484,14 @@ final class SettingsStore {
         hotkeyBindings.filter { $0.id != commandId && $0.binding.conflicts(with: binding) }
     }
 
-    func persistentWorkspaceNames() -> [String] {
-        workspaceConfigurations
-            .filter(\.isPersistent)
-            .map(\.name)
+    func configuredWorkspaceNames() -> [String] {
+        workspaceConfigurations.map(\.name)
     }
 
     func workspaceToMonitorAssignments() -> [String: [MonitorDescription]] {
         var result: [String: [MonitorDescription]] = [:]
         for config in workspaceConfigurations {
-            if let desc = config.monitorAssignment.toMonitorDescription() {
-                result[config.name] = [desc]
-            }
+            result[config.name] = [config.monitorAssignment.toMonitorDescription()]
         }
         return result
     }
@@ -518,14 +514,28 @@ final class SettingsStore {
         if let data = defaults.data(forKey: Keys.workspaceConfigurations),
            let configs = try? JSONDecoder().decode([WorkspaceConfiguration].self, from: data)
         {
-            return configs
+            return normalizedWorkspaceConfigurations(configs)
         }
-        return []
+        return normalizedWorkspaceConfigurations([])
     }
 
     private func saveWorkspaceConfigurations() {
         guard let data = try? JSONEncoder().encode(workspaceConfigurations) else { return }
         defaults.set(data, forKey: Keys.workspaceConfigurations)
+    }
+
+    private static func normalizedWorkspaceConfigurations(_ configs: [WorkspaceConfiguration]) -> [WorkspaceConfiguration] {
+        var seen: Set<String> = []
+        let normalized = configs
+            .filter { WorkspaceConfiguration.allowedNames.contains($0.name) }
+            .filter { seen.insert($0.name).inserted }
+            .sorted { $0.sortOrder < $1.sortOrder }
+
+        if normalized.isEmpty {
+            return [WorkspaceConfiguration(name: "1", monitorAssignment: .main)]
+        }
+
+        return normalized
     }
 
     func barSettings(for monitor: Monitor) -> MonitorBarSettings? {

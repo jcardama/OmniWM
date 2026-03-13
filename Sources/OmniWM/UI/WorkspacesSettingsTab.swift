@@ -29,10 +29,12 @@ struct WorkspacesSettingsTab: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.vertical, 8)
                 } else {
-                    ForEach(settings.workspaceConfigurations) { config in
+                    ForEach(sortedConfigurations) { config in
                         WorkspaceConfigurationRow(
                             configuration: config,
                             connectedMonitors: connectedMonitors,
+                            canDelete: canDeleteConfiguration(config),
+                            deleteHelp: deleteConfigurationHelp(config),
                             onEdit: { editingConfig = config },
                             onDelete: { deleteConfiguration(config) }
                         )
@@ -46,10 +48,11 @@ struct WorkspacesSettingsTab: View {
                         Image(systemName: "plus.circle")
                     }
                     .buttonStyle(.plain)
-                    .help("Add workspace configuration")
+                    .help(addButtonHelp)
+                    .disabled(nextAvailableWorkspaceName() == nil)
                 }
             } footer: {
-                Text("Configure workspace name, monitor assignment, layout, and persistence.")
+                Text("Workspace IDs are fixed numeric slots from 1 to 9. Display Name stays editable. Every configured workspace is retained until deleted.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -59,7 +62,6 @@ struct WorkspacesSettingsTab: View {
             WorkspaceEditSheet(
                 configuration: config,
                 isNew: false,
-                existingNames: existingNames(excluding: config.name),
                 connectedMonitors: connectedMonitors,
                 onSave: { updated in
                     updateConfiguration(updated)
@@ -69,62 +71,98 @@ struct WorkspacesSettingsTab: View {
             )
         }
         .sheet(isPresented: $isAddingNew) {
-            WorkspaceEditSheet(
-                configuration: WorkspaceConfiguration(name: ""),
-                isNew: true,
-                existingNames: existingNames(excluding: nil),
-                connectedMonitors: connectedMonitors,
-                onSave: { newConfig in
-                    addConfiguration(newConfig)
-                    isAddingNew = false
-                },
-                onCancel: { isAddingNew = false }
-            )
+            if let newName = nextAvailableWorkspaceName() {
+                WorkspaceEditSheet(
+                    configuration: WorkspaceConfiguration(name: newName, monitorAssignment: .main),
+                    isNew: true,
+                    connectedMonitors: connectedMonitors,
+                    onSave: { newConfig in
+                        addConfiguration(newConfig)
+                        isAddingNew = false
+                    },
+                    onCancel: { isAddingNew = false }
+                )
+            }
         }
     }
 
-    private func existingNames(excluding: String?) -> Set<String> {
-        Set(settings.workspaceConfigurations.map(\.name).filter { $0 != excluding })
+    private var sortedConfigurations: [WorkspaceConfiguration] {
+        settings.workspaceConfigurations.sorted { $0.sortOrder < $1.sortOrder }
+    }
+
+    private var addButtonHelp: String {
+        nextAvailableWorkspaceName() == nil ?
+            "OmniWM supports at most 9 configured workspaces" :
+            "Add the next available workspace"
+    }
+
+    private func nextAvailableWorkspaceName() -> String? {
+        let used = Set(settings.workspaceConfigurations.map(\.name))
+        return (1 ... 9).lazy.map(String.init).first { !used.contains($0) }
+    }
+
+    private func canDeleteConfiguration(_ config: WorkspaceConfiguration) -> Bool {
+        if settings.workspaceConfigurations.count <= 1 {
+            return false
+        }
+        guard let workspaceId = controller.workspaceManager.workspaceId(named: config.name) else { return true }
+        return controller.workspaceManager.entries(in: workspaceId).isEmpty
+    }
+
+    private func deleteConfigurationHelp(_ config: WorkspaceConfiguration) -> String {
+        if settings.workspaceConfigurations.count <= 1 {
+            return "OmniWM requires at least one configured workspace"
+        }
+        guard let workspaceId = controller.workspaceManager.workspaceId(named: config.name) else {
+            return "Delete workspace"
+        }
+        return controller.workspaceManager.entries(in: workspaceId).isEmpty ?
+            "Delete workspace" :
+            "Move or close all windows in this workspace before deleting it"
     }
 
     private func addConfiguration(_ config: WorkspaceConfiguration) {
         settings.workspaceConfigurations.append(config)
+        settings.workspaceConfigurations.sort { $0.sortOrder < $1.sortOrder }
         controller.updateWorkspaceConfig()
     }
 
     private func updateConfiguration(_ config: WorkspaceConfiguration) {
         if let index = settings.workspaceConfigurations.firstIndex(where: { $0.id == config.id }) {
             settings.workspaceConfigurations[index] = config
+            settings.workspaceConfigurations.sort { $0.sortOrder < $1.sortOrder }
             controller.updateWorkspaceConfig()
         }
     }
 
     private func deleteConfiguration(_ config: WorkspaceConfiguration) {
+        guard canDeleteConfiguration(config) else { return }
         settings.workspaceConfigurations.removeAll { $0.id == config.id }
+        for index in settings.appRules.indices where settings.appRules[index].assignToWorkspace == config.name {
+            settings.appRules[index].assignToWorkspace = nil
+        }
         controller.updateWorkspaceConfig()
+        controller.updateAppRules()
     }
 }
 
 struct WorkspaceConfigurationRow: View {
     let configuration: WorkspaceConfiguration
     let connectedMonitors: [Monitor]
+    let canDelete: Bool
+    let deleteHelp: String
     let onEdit: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(configuration.effectiveDisplayName)
-                    .font(.body.weight(.medium))
-                if configuration.displayName != nil, !configuration.displayName!.isEmpty {
-                    Text("(\(configuration.name))")
-                        .font(.caption2)
+                HStack(spacing: 6) {
+                    Text("WS \(configuration.name)")
+                        .font(.caption.monospaced())
                         .foregroundColor(.secondary)
-                }
-                if configuration.isPersistent {
-                    Text("Persistent")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                    Text(configuration.effectiveDisplayName)
+                        .font(.body.weight(.medium))
                 }
             }
             .frame(minWidth: 60, alignment: .leading)
@@ -160,26 +198,23 @@ struct WorkspaceConfigurationRow: View {
                     .foregroundColor(.red)
             }
             .buttonStyle(.plain)
-            .help("Delete workspace configuration")
+            .help(deleteHelp)
+            .disabled(!canDelete)
         }
         .padding(.vertical, 4)
     }
 
     private func monitorDisplayName(_ assignment: MonitorAssignment) -> String {
         switch assignment {
-        case .any:
-            return "Any"
         case .main:
             return "Main"
         case .secondary:
             return "Secondary"
-        case let .numbered(n):
-            if n > 0, n <= connectedMonitors.count {
-                return connectedMonitors[n - 1].name
+        case let .specificDisplay(output):
+            if let monitor = output.resolveMonitor(in: connectedMonitors) {
+                return monitor.name
             }
-            return "Monitor \(n)"
-        case let .pattern(p):
-            return "Pattern: \(p)"
+            return "\(output.name) (Disconnected)"
         }
     }
 }
@@ -187,34 +222,22 @@ struct WorkspaceConfigurationRow: View {
 struct WorkspaceEditSheet: View {
     @State private var configuration: WorkspaceConfiguration
     let isNew: Bool
-    let existingNames: Set<String>
     let connectedMonitors: [Monitor]
     let onSave: (WorkspaceConfiguration) -> Void
     let onCancel: () -> Void
 
-    @State private var nameError: String?
-    @State private var customPattern: String = ""
-    @State private var useCustomPattern: Bool = false
-
     init(
         configuration: WorkspaceConfiguration,
         isNew: Bool,
-        existingNames: Set<String>,
         connectedMonitors: [Monitor],
         onSave: @escaping (WorkspaceConfiguration) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _configuration = State(initialValue: configuration)
         self.isNew = isNew
-        self.existingNames = existingNames
         self.connectedMonitors = connectedMonitors
         self.onSave = onSave
         self.onCancel = onCancel
-
-        if case let .pattern(p) = configuration.monitorAssignment {
-            _customPattern = State(initialValue: p)
-            _useCustomPattern = State(initialValue: true)
-        }
     }
 
     var body: some View {
@@ -223,15 +246,10 @@ struct WorkspaceEditSheet: View {
                 .font(.headline)
 
             Form {
-                TextField("Workspace ID", text: $configuration.name)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: configuration.name) { _, newValue in
-                        validateName(newValue)
-                    }
-                if let error = nameError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundColor(.red)
+                LabeledContent("Workspace ID") {
+                    Text(configuration.name)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundColor(.secondary)
                 }
 
                 TextField("Display Name (optional)", text: Binding(
@@ -240,40 +258,30 @@ struct WorkspaceEditSheet: View {
                 ))
                 .textFieldStyle(.roundedBorder)
 
-                Picker("Monitor", selection: monitorSelectionBinding) {
-                    Text("Any").tag(MonitorAssignment.any)
+                Picker("Home Monitor", selection: $configuration.monitorAssignment) {
                     Text("Main").tag(MonitorAssignment.main)
                     Text("Secondary").tag(MonitorAssignment.secondary)
                     Divider()
-                    ForEach(Array(connectedMonitors.enumerated()), id: \.element.id) { index, monitor in
+                    ForEach(connectedMonitors, id: \.id) { monitor in
                         HStack {
                             Text(monitor.name)
                             if monitor.isMain {
                                 Text("(Main)").foregroundColor(.secondary)
                             }
                         }
-                        .tag(MonitorAssignment.numbered(index + 1))
+                        .tag(MonitorAssignment.specificDisplay(OutputId(from: monitor)))
                     }
-                    Divider()
-                    Text("Custom Pattern...")
-                        .tag(MonitorAssignment.pattern(customPattern.isEmpty ? " " : customPattern))
                 }
 
-                if useCustomPattern {
-                    TextField("Monitor Name Pattern (regex)", text: $customPattern)
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: customPattern) { _, newValue in
-                            configuration.monitorAssignment = .pattern(newValue)
-                        }
-                }
+                Text("Main follows the current main display. Secondary follows the first non-main display. Specific Display pins this workspace to the selected monitor when available.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
 
                 Picker("Layout", selection: $configuration.layoutType) {
                     ForEach(LayoutType.allCases) { layout in
                         Text(layout.displayName).tag(layout)
                     }
                 }
-
-                Toggle("Keep workspace alive when empty", isOn: $configuration.isPersistent)
             }
 
             HStack {
@@ -286,51 +294,9 @@ struct WorkspaceEditSheet: View {
                     onSave(configuration)
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!isValid)
             }
         }
         .padding()
-        .frame(minWidth: 350)
-    }
-
-    private var monitorSelectionBinding: Binding<MonitorAssignment> {
-        Binding(
-            get: { configuration.monitorAssignment },
-            set: { newValue in
-                if case .pattern = newValue {
-                    useCustomPattern = true
-                    if customPattern.isEmpty {
-                        customPattern = ""
-                    }
-                    configuration.monitorAssignment = .pattern(customPattern)
-                } else {
-                    useCustomPattern = false
-                    configuration.monitorAssignment = newValue
-                }
-            }
-        )
-    }
-
-    private var isValid: Bool {
-        !configuration.name.isEmpty && nameError == nil
-    }
-
-    private func validateName(_ name: String) {
-        if name.isEmpty {
-            nameError = nil
-            return
-        }
-
-        if existingNames.contains(name) {
-            nameError = "A workspace with this name already exists"
-            return
-        }
-
-        switch WorkspaceName.parse(name) {
-        case .success:
-            nameError = nil
-        case let .failure(error):
-            nameError = error.message
-        }
+        .frame(minWidth: 420)
     }
 }

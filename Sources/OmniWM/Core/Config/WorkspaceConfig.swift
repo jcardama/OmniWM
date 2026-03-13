@@ -17,90 +17,58 @@ enum LayoutType: String, Codable, CaseIterable, Identifiable {
 }
 
 enum MonitorAssignment: Equatable, Hashable {
-    case any
     case main
     case secondary
-    case numbered(Int)
-    case pattern(String)
+    case specificDisplay(OutputId)
 
     var displayName: String {
         switch self {
-        case .any: "Any"
         case .main: "Main"
         case .secondary: "Secondary"
-        case let .numbered(n): "Monitor \(n)"
-        case let .pattern(p): "Pattern: \(p)"
+        case let .specificDisplay(output): output.name
         }
     }
 
-    func toMonitorDescription() -> MonitorDescription? {
+    func toMonitorDescription() -> MonitorDescription {
         switch self {
-        case .any: return nil
         case .main: return .main
         case .secondary: return .secondary
-        case let .numbered(n): return .sequenceNumber(n)
-        case let .pattern(p):
-            if case let .success(desc) = parseMonitorDescription(p) {
-                return desc
-            }
-            return nil
-        }
-    }
-
-    static func fromString(_ raw: String) -> MonitorAssignment {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch trimmed.lowercased() {
-        case "main": return .main
-        case "secondary": return .secondary
-        default:
-            if let num = Int(trimmed), num >= 1 {
-                return .numbered(num)
-            }
-            return .pattern(trimmed)
+        case let .specificDisplay(output): return .output(output)
         }
     }
 }
 
 extension MonitorAssignment: Codable {
     private enum CodingKeys: String, CodingKey {
-        case type, value
+        case type, output
     }
 
     private enum AssignmentType: String, Codable {
-        case any, main, secondary, numbered, pattern
+        case main, secondary, specificDisplay
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let type = try container.decode(AssignmentType.self, forKey: .type)
         switch type {
-        case .any: self = .any
         case .main: self = .main
         case .secondary: self = .secondary
-        case .numbered:
-            let value = try container.decode(Int.self, forKey: .value)
-            self = .numbered(value)
-        case .pattern:
-            let value = try container.decode(String.self, forKey: .value)
-            self = .pattern(value)
+        case .specificDisplay:
+            let output = try container.decode(OutputId.self, forKey: .output)
+            self = .specificDisplay(output)
         }
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .any:
-            try container.encode(AssignmentType.any, forKey: .type)
         case .main:
             try container.encode(AssignmentType.main, forKey: .type)
         case .secondary:
             try container.encode(AssignmentType.secondary, forKey: .type)
-        case let .numbered(n):
-            try container.encode(AssignmentType.numbered, forKey: .type)
-            try container.encode(n, forKey: .value)
-        case let .pattern(p):
-            try container.encode(AssignmentType.pattern, forKey: .type)
-            try container.encode(p, forKey: .value)
+        case let .specificDisplay(output):
+            try container.encode(AssignmentType.specificDisplay, forKey: .type)
+            try container.encode(output, forKey: .output)
         }
     }
 }
@@ -111,31 +79,34 @@ struct WorkspaceConfiguration: Codable, Identifiable, Equatable {
     var displayName: String?
     var monitorAssignment: MonitorAssignment
     var layoutType: LayoutType
-    var isPersistent: Bool
 
     var effectiveDisplayName: String {
         displayName.flatMap { $0.isEmpty ? nil : $0 } ?? name
     }
 
+    static let allowedNames = Set((1 ... 9).map(String.init))
+
     init(
         id: UUID = UUID(),
         name: String,
         displayName: String? = nil,
-        monitorAssignment: MonitorAssignment = .any,
-        layoutType: LayoutType = .defaultLayout,
-        isPersistent: Bool = false
+        monitorAssignment: MonitorAssignment = .main,
+        layoutType: LayoutType = .defaultLayout
     ) {
         self.id = id
         self.name = name
         self.displayName = displayName
         self.monitorAssignment = monitorAssignment
         self.layoutType = layoutType
-        self.isPersistent = isPersistent
     }
 
     func with(layoutType: LayoutType) -> WorkspaceConfiguration {
         var copy = self
         copy.layoutType = layoutType
         return copy
+    }
+
+    var sortOrder: Int {
+        Int(name) ?? .max
     }
 }

@@ -471,7 +471,7 @@ final class WMController {
         if let bundleId = appInfoCache.bundleId(for: pid),
            let rule = appRulesByBundleId[bundleId],
            let wsName = rule.assignToWorkspace,
-           let wsId = workspaceManager.workspaceId(for: wsName, createIfMissing: true)
+           let wsId = workspaceManager.workspaceId(for: wsName, createIfMissing: false)
         {
             return wsId
         }
@@ -496,7 +496,7 @@ final class WMController {
         if let workspaceId = workspaceManager.primaryWorkspace()?.id ?? workspaceManager.workspaces.first?.id {
             return workspaceId
         }
-        if let createdWorkspaceId = workspaceManager.workspaceId(for: "1", createIfMissing: true) {
+        if let createdWorkspaceId = workspaceManager.workspaceId(for: "1", createIfMissing: false) {
             return createdWorkspaceId
         }
         fatalError("resolveWorkspaceForNewWindow: no workspaces exist")

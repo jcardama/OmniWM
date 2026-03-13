@@ -24,21 +24,15 @@ private func makeMonitorDescriptionTestMonitor(
 }
 
 @Suite struct MonitorDescriptionTests {
-    @Test func parseMainAndSecondaryCaseInsensitive() {
-        let parsedMain = parseMonitorDescription("Main")
-        let parsedSecondary = parseMonitorDescription("SECONDARY")
+    @Test func outputResolvesByExactDisplayId() {
+        let mainMonitor = makeMonitorDescriptionTestMonitor(displayId: 100, name: "Main", x: 0, y: 0)
+        let second = makeMonitorDescriptionTestMonitor(displayId: 200, name: "Second", x: 1920, y: 0)
+        let sorted = Monitor.sortedByPosition([mainMonitor, second])
 
-        if case let .success(desc) = parsedMain {
-            #expect(desc == .main)
-        } else {
-            Issue.record("Expected case-insensitive parse of 'Main'")
-        }
+        let resolved = MonitorDescription.output(OutputId(displayId: 200, name: "Second"))
+            .resolveMonitor(sortedMonitors: sorted)
 
-        if case let .success(desc) = parsedSecondary {
-            #expect(desc == .secondary)
-        } else {
-            Issue.record("Expected case-insensitive parse of 'SECONDARY'")
-        }
+        #expect(resolved?.id == second.id)
     }
 
     @Test func secondaryResolvesWithThreeMonitors() {
@@ -54,5 +48,15 @@ private func makeMonitorDescriptionTestMonitor(
 
         let resolved = MonitorDescription.secondary.resolveMonitor(sortedMonitors: sorted)
         #expect(resolved?.id == second.id)
+    }
+
+    @Test func outputFallsBackToUniqueName() {
+        let mainMonitor = makeMonitorDescriptionTestMonitor(displayId: 100, name: "Studio Display", x: 0, y: 0)
+        let sorted = Monitor.sortedByPosition([mainMonitor])
+
+        let resolved = MonitorDescription.output(OutputId(displayId: 999, name: "Studio Display"))
+            .resolveMonitor(sortedMonitors: sorted)
+
+        #expect(resolved?.id == mainMonitor.id)
     }
 }

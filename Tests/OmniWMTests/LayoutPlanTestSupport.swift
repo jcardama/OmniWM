@@ -33,14 +33,22 @@ func makeLayoutPlanTestWindow(windowId: Int = 101) -> AXWindowRef {
 }
 
 @MainActor
-func makeLayoutPlanTestController(monitors: [Monitor] = [makeLayoutPlanTestMonitor()]) -> WMController {
+func makeLayoutPlanTestController(
+    monitors: [Monitor] = [makeLayoutPlanTestMonitor()],
+    workspaceConfigurations: [WorkspaceConfiguration] = [
+        WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+        WorkspaceConfiguration(name: "2", monitorAssignment: .main)
+    ]
+) -> WMController {
     let operations = WindowFocusOperations(
         activateApp: { _ in },
         focusSpecificWindow: { _, _, _ in },
         raiseWindow: { _ in }
     )
+    let settings = SettingsStore(defaults: makeLayoutPlanTestDefaults())
+    settings.workspaceConfigurations = workspaceConfigurations
     let controller = WMController(
-        settings: SettingsStore(defaults: makeLayoutPlanTestDefaults()),
+        settings: settings,
         windowFocusOperations: operations
     )
     controller.workspaceManager.applyMonitorConfigurationChange(monitors)
@@ -61,15 +69,20 @@ func makeTwoMonitorLayoutPlanTestController() -> (
         name: "Secondary",
         x: 1920
     )
-    let controller = makeLayoutPlanTestController(monitors: [primaryMonitor, secondaryMonitor])
+    let controller = makeLayoutPlanTestController(
+        monitors: [primaryMonitor, secondaryMonitor],
+        workspaceConfigurations: [
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+            WorkspaceConfiguration(name: "2", monitorAssignment: .secondary)
+        ]
+    )
 
     guard let primaryWorkspaceId = controller.workspaceManager.activeWorkspaceOrFirst(on: primaryMonitor.id)?.id,
-          let secondaryWorkspaceId = controller.workspaceManager.workspaceId(for: "2", createIfMissing: true)
+          let secondaryWorkspaceId = controller.workspaceManager.workspaceId(for: "2", createIfMissing: false)
     else {
         fatalError("Failed to create two-monitor layout plan fixture")
     }
 
-    controller.workspaceManager.assignWorkspaceToMonitor(secondaryWorkspaceId, monitorId: secondaryMonitor.id)
     _ = controller.workspaceManager.setActiveWorkspace(secondaryWorkspaceId, on: secondaryMonitor.id)
     _ = controller.workspaceManager.setInteractionMonitor(primaryMonitor.id)
 

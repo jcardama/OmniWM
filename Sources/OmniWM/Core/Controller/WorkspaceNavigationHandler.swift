@@ -618,7 +618,7 @@ final class WorkspaceNavigationHandler {
         let candidateName = String(candidateNumber)
         guard wm.workspaceId(named: candidateName) == nil else { return nil }
 
-        guard let targetId = wm.workspaceId(for: candidateName, createIfMissing: true) else { return nil }
+        guard let targetId = wm.workspaceId(for: candidateName, createIfMissing: false) else { return nil }
         wm.assignWorkspaceToMonitor(targetId, monitorId: monitorId)
         return wm.descriptor(for: targetId)
     }
@@ -828,7 +828,7 @@ final class WorkspaceNavigationHandler {
         guard let wsId = controller.activeWorkspace()?.id else { return }
 
         let targetName = String(max(0, index) + 1)
-        guard let targetWsId = controller.workspaceManager.workspaceId(for: targetName, createIfMissing: true)
+        guard let targetWsId = controller.workspaceManager.workspaceId(for: targetName, createIfMissing: false)
         else { return }
 
         guard targetWsId != wsId else { return }
@@ -884,7 +884,7 @@ final class WorkspaceNavigationHandler {
         guard let controller else { return }
         guard let token = controller.workspaceManager.focusedToken else { return }
         let targetName = String(max(0, index) + 1)
-        guard let targetId = controller.workspaceManager.workspaceId(for: targetName, createIfMissing: true),
+        guard let targetId = controller.workspaceManager.workspaceId(for: targetName, createIfMissing: false),
               let target = controller.workspaceManager.descriptor(for: targetId)
         else {
             return
@@ -1038,7 +1038,7 @@ final class WorkspaceNavigationHandler {
         ) else { return }
 
         let targetName = String(max(0, workspaceIndex) + 1)
-        guard let targetWsId = controller.workspaceManager.workspaceId(for: targetName, createIfMissing: true)
+        guard let targetWsId = controller.workspaceManager.workspaceId(for: targetName, createIfMissing: false)
         else { return }
 
         if controller.workspaceManager.monitorId(for: targetWsId) != targetMonitor.id {
