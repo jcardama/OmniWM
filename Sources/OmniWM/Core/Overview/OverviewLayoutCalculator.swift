@@ -43,7 +43,6 @@ struct OverviewLayoutCalculator {
         let scaledWorkspaceSectionPadding: CGFloat
         let scaledWindowSpacing: CGFloat
         let thumbnailWidth: CGFloat
-        let thumbnailHeight: CGFloat
         let initialContentY: CGFloat
         let contentTopPadding: CGFloat
         let contentBottomPadding: CGFloat
@@ -158,25 +157,6 @@ struct OverviewLayoutCalculator {
         return layout
     }
 
-    private static func calculateOptimalColumns(
-        windowCount: Int,
-        availableWidth: CGFloat,
-        thumbnailWidth: CGFloat
-    ) -> Int {
-        let maxColumns = Int((availableWidth + OverviewLayoutMetrics.windowSpacing) / (thumbnailWidth + OverviewLayoutMetrics.windowSpacing))
-        let idealColumns = min(windowCount, max(1, maxColumns))
-
-        if windowCount <= 3 {
-            return min(windowCount, idealColumns)
-        }
-
-        if windowCount <= 6 {
-            return min(3, idealColumns)
-        }
-
-        return min(4, idealColumns)
-    }
-
     private static func buildContext(screenFrame: CGRect, scale: CGFloat) -> BuildContext {
         let metricsScale = clampedScale(scale)
         let scaledSearchBarHeight = OverviewLayoutMetrics.searchBarHeight * metricsScale
@@ -206,7 +186,6 @@ struct OverviewLayoutCalculator {
             scaledWorkspaceSectionPadding: OverviewLayoutMetrics.workspaceSectionPadding * metricsScale,
             scaledWindowSpacing: OverviewLayoutMetrics.windowSpacing * metricsScale,
             thumbnailWidth: thumbnailWidth,
-            thumbnailHeight: thumbnailWidth / OverviewLayoutMetrics.thumbnailAspectRatio,
             initialContentY: searchBarY - OverviewLayoutMetrics.contentTopPadding * metricsScale,
             contentTopPadding: OverviewLayoutMetrics.contentTopPadding * metricsScale,
             contentBottomPadding: OverviewLayoutMetrics.contentBottomPadding * metricsScale
@@ -222,19 +201,9 @@ struct OverviewLayoutCalculator {
     ) -> OverviewWorkspaceSection? {
         guard !windows.isEmpty else { return nil }
 
-        let sortedWindows = windows.sorted { lhs, rhs in
-            lhs.1.title < rhs.1.title
+        let orderedWindows = windows.sorted { lhs, rhs in
+            compareWindowsForPreview(lhs.1, rhs.1)
         }
-
-        let columns = calculateOptimalColumns(
-            windowCount: sortedWindows.count,
-            availableWidth: context.availableWidth,
-            thumbnailWidth: context.thumbnailWidth
-        )
-
-        let totalGridWidth = CGFloat(columns) * context.thumbnailWidth +
-            CGFloat(columns - 1) * OverviewLayoutMetrics.windowSpacing
-        let gridStartX = context.screenFrame.minX + (context.screenFrame.width - totalGridWidth) / 2
 
         currentY -= context.scaledWorkspaceLabelHeight
 
@@ -248,19 +217,26 @@ struct OverviewLayoutCalculator {
         currentY -= context.scaledWorkspaceSectionPadding
 
         var windowItems: [OverviewWindowItem] = []
-        windowItems.reserveCapacity(sortedWindows.count)
+        windowItems.reserveCapacity(orderedWindows.count)
 
-        for (windowIndex, (handle, windowData)) in sortedWindows.enumerated() {
-            let column = windowIndex % columns
-            let row = windowIndex / columns
+        let normalizedFrames = orderedWindows.map { normalizedSourceFrame($0.1.frame) }
+        let sourceBounds = boundingRect(for: normalizedFrames)
+        let previewScale = workspacePreviewScale(for: sourceBounds.size, context: context)
+        let projectedSize = CGSize(
+            width: sourceBounds.width * previewScale,
+            height: sourceBounds.height * previewScale
+        )
+        let previewOrigin = CGPoint(
+            x: context.screenFrame.minX + (context.screenFrame.width - projectedSize.width) / 2,
+            y: currentY - projectedSize.height
+        )
 
-            let windowX = gridStartX + CGFloat(column) * (context.thumbnailWidth + context.scaledWindowSpacing)
-            let windowY = currentY - CGFloat(row + 1) * (context.thumbnailHeight + context.scaledWindowSpacing)
-            let overviewFrame = CGRect(
-                x: windowX,
-                y: windowY,
-                width: context.thumbnailWidth,
-                height: context.thumbnailHeight
+        for ((handle, windowData), sourceFrame) in zip(orderedWindows, normalizedFrames) {
+            let overviewFrame = projectFrame(
+                sourceFrame,
+                from: sourceBounds,
+                previewOrigin: previewOrigin,
+                scale: previewScale
             )
 
             windowItems.append(
@@ -274,14 +250,9 @@ struct OverviewLayoutCalculator {
             )
         }
 
-        let rows = (sortedWindows.count + columns - 1) / columns
-        let gridHeight = CGFloat(rows) * context.thumbnailHeight +
-            CGFloat(rows - 1) * context.scaledWindowSpacing
         let gridFrame = CGRect(
-            x: gridStartX,
-            y: currentY - gridHeight,
-            width: totalGridWidth,
-            height: gridHeight
+            origin: previewOrigin,
+            size: projectedSize
         )
 
         let section = makeWorkspaceSection(
@@ -322,7 +293,7 @@ struct OverviewLayoutCalculator {
         let totalWeight = snapshot.columns.reduce(CGFloat(0)) { partial, column in
             partial + max(column.widthWeight, 0.001)
         }
-        let preferredWidths = snapshot.columns.map { column in
+        let rawColumnWidths = snapshot.columns.map { column in
             preferredNiriColumnWidth(
                 for: column,
                 totalWeight: totalWeight,
@@ -330,25 +301,21 @@ struct OverviewLayoutCalculator {
                 context: context
             )
         }
-        let totalSpacing = context.scaledWindowSpacing * CGFloat(max(0, columnCount - 1))
-        let maxColumnSpan = max(0, context.availableWidth - totalSpacing)
-        let preferredWidthTotal = preferredWidths.reduce(CGFloat(0), +)
-        let widthScale = preferredWidthTotal > 0 ? min(1, maxColumnSpan / preferredWidthTotal) : 1
-        let columnWidths = preferredWidths.map { $0 * widthScale }
-        let totalGridWidth = columnWidths.reduce(CGFloat(0), +) + totalSpacing
-        let gridStartX = context.screenFrame.minX + (context.screenFrame.width - totalGridWidth) / 2
-
-        let maxTileCount = max(1, snapshot.columns.map { max(1, $0.tiles.count) }.max() ?? 1)
-        let representativeColumnWidth = columnWidths.isEmpty
-            ? context.thumbnailWidth
-            : max(context.thumbnailWidth * 0.5, columnWidths.reduce(CGFloat(0), +) / CGFloat(columnCount))
-        let baseTileHeight = min(
-            context.thumbnailHeight,
-            max(30 * context.metricsScale, representativeColumnWidth / OverviewLayoutMetrics.thumbnailAspectRatio)
+        let rawColumnHeights = snapshot.columns.map { column in
+            preferredNiriColumnHeight(for: column, spacing: context.scaledWindowSpacing)
+        }
+        let rawTotalWidth = rawColumnWidths.reduce(CGFloat(0), +) +
+            context.scaledWindowSpacing * CGFloat(max(0, columnCount - 1))
+        let rawMaxHeight = max(rawColumnHeights.max() ?? 1, 1)
+        let workspaceScale = workspacePreviewScale(
+            for: CGSize(width: rawTotalWidth, height: rawMaxHeight),
+            context: context
         )
-        let innerSpacing = max(6 * context.metricsScale, context.scaledWindowSpacing * 0.375)
-        let gridHeight = CGFloat(maxTileCount) * baseTileHeight +
-            CGFloat(max(0, maxTileCount - 1)) * innerSpacing
+        let columnWidths = rawColumnWidths.map { $0 * workspaceScale }
+        let columnHeights = rawColumnHeights.map { $0 * workspaceScale }
+        let totalGridWidth = rawTotalWidth * workspaceScale
+        let gridHeight = rawMaxHeight * workspaceScale
+        let gridStartX = context.screenFrame.minX + (context.screenFrame.width - totalGridWidth) / 2
         let gridFrame = CGRect(
             x: gridStartX,
             y: currentY - gridHeight,
@@ -365,26 +332,26 @@ struct OverviewLayoutCalculator {
         var currentX = gridStartX
         for (columnIndex, columnSnapshot) in snapshot.columns.enumerated() {
             let columnWidth = columnWidths.indices.contains(columnIndex) ? columnWidths[columnIndex] : 0
+            let columnHeight = columnHeights.indices.contains(columnIndex) ? columnHeights[columnIndex] : gridHeight
             let columnFrame = CGRect(
                 x: currentX,
                 y: gridFrame.minY,
                 width: columnWidth,
-                height: gridHeight
+                height: columnHeight
             )
 
             let mappedWindows = columnSnapshot.tiles.compactMap { windowsByToken[$0.token] }
-            let tileCount = max(1, mappedWindows.count)
-            let tileSpacing = innerSpacing * CGFloat(max(0, tileCount - 1))
-            let tileHeight = mappedWindows.isEmpty
-                ? 0
-                : max(30 * context.metricsScale, (gridHeight - tileSpacing) / CGFloat(tileCount))
+            let projectedTileHeights = columnSnapshot.tiles.map { max($0.preferredHeight, 1) * workspaceScale }
 
             var handles: [WindowHandle] = []
             handles.reserveCapacity(mappedWindows.count)
 
+            var nextTileY = columnFrame.maxY
             for (tileIndex, (handle, windowData)) in mappedWindows.enumerated() {
-                let tileY = columnFrame.maxY - CGFloat(tileIndex + 1) * tileHeight -
-                    CGFloat(tileIndex) * innerSpacing
+                let tileHeight = projectedTileHeights.indices.contains(tileIndex)
+                    ? projectedTileHeights[tileIndex]
+                    : max(windowData.frame.height * workspaceScale, 1)
+                let tileY = nextTileY - tileHeight
                 let tileFrame = CGRect(
                     x: columnFrame.minX,
                     y: tileY,
@@ -402,6 +369,7 @@ struct OverviewLayoutCalculator {
                     )
                 )
                 handles.append(handle)
+                nextTileY = tileY - context.scaledWindowSpacing
             }
 
             projectedColumns.append(
@@ -451,6 +419,93 @@ struct OverviewLayoutCalculator {
 
         let normalizedWeight = max(column.widthWeight, 0.001) / max(totalWeight, 0.001)
         return context.thumbnailWidth * CGFloat(columnCount) * normalizedWeight
+    }
+
+    private static func preferredNiriColumnHeight(
+        for column: NiriOverviewColumnSnapshot,
+        spacing: CGFloat
+    ) -> CGFloat {
+        guard !column.tiles.isEmpty else { return 1 }
+
+        let preferredHeight = column.tiles.reduce(CGFloat(0)) { partial, tile in
+            partial + max(tile.preferredHeight, 1)
+        }
+        return preferredHeight + spacing * CGFloat(max(0, column.tiles.count - 1))
+    }
+
+    private static func compareWindowsForPreview(
+        _ lhs: OverviewWindowLayoutData,
+        _ rhs: OverviewWindowLayoutData
+    ) -> Bool {
+        let lhsFrame = normalizedSourceFrame(lhs.frame)
+        let rhsFrame = normalizedSourceFrame(rhs.frame)
+        if abs(lhsFrame.maxY - rhsFrame.maxY) > 1 {
+            return lhsFrame.maxY > rhsFrame.maxY
+        }
+        if abs(lhsFrame.minX - rhsFrame.minX) > 1 {
+            return lhsFrame.minX < rhsFrame.minX
+        }
+        return lhs.title < rhs.title
+    }
+
+    private static func normalizedSourceFrame(_ frame: CGRect) -> CGRect {
+        let standardized = frame.standardized
+        return CGRect(
+            x: standardized.minX,
+            y: standardized.minY,
+            width: max(standardized.width, 1),
+            height: max(standardized.height, 1)
+        )
+    }
+
+    private static func boundingRect(for frames: [CGRect]) -> CGRect {
+        let bounds = frames.reduce(into: CGRect.null) { partial, frame in
+            partial = partial.union(frame)
+        }
+        if bounds.isNull {
+            return CGRect(x: 0, y: 0, width: 1, height: 1)
+        }
+
+        return CGRect(
+            x: bounds.minX,
+            y: bounds.minY,
+            width: max(bounds.width, 1),
+            height: max(bounds.height, 1)
+        )
+    }
+
+    private static func workspacePreviewScale(
+        for sourceSize: CGSize,
+        context: BuildContext
+    ) -> CGFloat {
+        let safeWidth = max(sourceSize.width, 1)
+        let safeHeight = max(sourceSize.height, 1)
+        let maxPreviewWidth = min(
+            context.availableWidth,
+            context.screenFrame.width * 0.72 * context.metricsScale
+        )
+        let maxPreviewHeight = max(
+            context.thumbnailWidth / OverviewLayoutMetrics.thumbnailAspectRatio,
+            context.screenFrame.height * 0.42 * context.metricsScale
+        )
+        return max(
+            0.01,
+            min(maxPreviewWidth / safeWidth, maxPreviewHeight / safeHeight)
+        )
+    }
+
+    private static func projectFrame(
+        _ sourceFrame: CGRect,
+        from sourceBounds: CGRect,
+        previewOrigin: CGPoint,
+        scale: CGFloat
+    ) -> CGRect {
+        CGRect(
+            x: previewOrigin.x + (sourceFrame.minX - sourceBounds.minX) * scale,
+            y: previewOrigin.y + (sourceFrame.minY - sourceBounds.minY) * scale,
+            width: sourceFrame.width * scale,
+            height: sourceFrame.height * scale
+        )
     }
 
     private static func buildNiriColumnDropZones(

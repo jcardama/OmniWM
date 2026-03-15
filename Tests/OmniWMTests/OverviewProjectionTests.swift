@@ -45,7 +45,8 @@ private func makeNiriOverviewSnapshot(
     workspaceId: WorkspaceDescriptor.ID,
     columns: [[WindowHandle]],
     preferredWidths: [CGFloat?] = [],
-    widthWeights: [CGFloat] = []
+    widthWeights: [CGFloat] = [],
+    preferredHeights: [[CGFloat]] = []
 ) -> NiriOverviewWorkspaceSnapshot {
     let resolvedWeights = widthWeights.isEmpty ? Array(repeating: 1.0, count: columns.count) : widthWeights
     let resolvedPreferredWidths = preferredWidths.isEmpty ? Array(repeating: nil, count: columns.count) : preferredWidths
@@ -57,7 +58,16 @@ private func makeNiriOverviewSnapshot(
                 index: index,
                 widthWeight: resolvedWeights[index],
                 preferredWidth: resolvedPreferredWidths[index],
-                tiles: handles.map { NiriOverviewTileSnapshot(token: $0.id) }
+                tiles: handles.enumerated().map { tileIndex, handle in
+                    let preferredHeight = preferredHeights.indices.contains(index) &&
+                        preferredHeights[index].indices.contains(tileIndex)
+                        ? preferredHeights[index][tileIndex]
+                        : 1.0
+                    return NiriOverviewTileSnapshot(
+                        token: handle.id,
+                        preferredHeight: preferredHeight
+                    )
+                }
             )
         }
     )
@@ -282,6 +292,56 @@ private func makeNiriOverviewLayout(
         #expect(zoomedLayout.allWindows.count == baseLayout.allWindows.count)
     }
 
+    @Test @MainActor func genericProjectionPreservesWindowAspectRatios() {
+        let workspaceId = WorkspaceDescriptor.ID()
+        let model = WindowModel()
+        let workspaces: [OverviewWorkspaceLayoutItem] = [
+            (id: workspaceId, name: "1", isActive: true)
+        ]
+
+        let wide = makeOverviewProjectionWindow(
+            model: model,
+            workspaceId: workspaceId,
+            windowId: 450,
+            frame: CGRect(x: 40, y: 120, width: 1200, height: 320),
+            title: "Wide"
+        )
+        let tall = makeOverviewProjectionWindow(
+            model: model,
+            workspaceId: workspaceId,
+            windowId: 451,
+            frame: CGRect(x: 1280, y: 120, width: 320, height: 960),
+            title: "Tall"
+        )
+
+        let layout = OverviewLayoutCalculator.calculateLayout(
+            workspaces: workspaces,
+            windows: [
+                wide.handle: wide.data,
+                tall.handle: tall.data
+            ],
+            screenFrame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+            searchQuery: "",
+            scale: 1.0
+        )
+
+        guard let widePreview = layout.window(for: wide.handle)?.overviewFrame,
+              let tallPreview = layout.window(for: tall.handle)?.overviewFrame
+        else {
+            Issue.record("Expected projected generic windows")
+            return
+        }
+
+        #expect((widePreview.width / widePreview.height).isApproximatelyEqual(
+            to: wide.data.frame.width / wide.data.frame.height,
+            tolerance: 0.02
+        ))
+        #expect((tallPreview.width / tallPreview.height).isApproximatelyEqual(
+            to: tall.data.frame.width / tall.data.frame.height,
+            tolerance: 0.02
+        ))
+    }
+
     @Test @MainActor func niriProjectionFollowsEngineTileOrderWhenFramesDisagree() {
         let workspaceId = WorkspaceDescriptor.ID()
         let model = WindowModel()
@@ -428,10 +488,56 @@ private func makeNiriOverviewLayout(
         let genericDistinctColumns = Set(genericLayout.allWindows.map { Int($0.overviewFrame.minX.rounded()) }).count
         let niriColumns = niriLayout.niriColumnsByWorkspace[workspaceId] ?? []
 
-        #expect(genericDistinctColumns == 3)
+        #expect(genericDistinctColumns == 5)
         #expect(niriColumns.count == 5)
-        #expect(niriColumns.count > genericDistinctColumns)
         #expect(niriLayout.niriColumnDropZonesByWorkspace[workspaceId]?.count == 6)
+    }
+
+    @Test @MainActor func niriProjectionPreservesTileHeightRatios() {
+        let workspaceId = WorkspaceDescriptor.ID()
+        let model = WindowModel()
+        let workspaces: [OverviewWorkspaceLayoutItem] = [
+            (id: workspaceId, name: "1", isActive: true)
+        ]
+
+        let top = makeOverviewProjectionWindow(
+            model: model,
+            workspaceId: workspaceId,
+            windowId: 750,
+            frame: CGRect(x: 80, y: 520, width: 720, height: 420),
+            title: "Top"
+        )
+        let bottom = makeOverviewProjectionWindow(
+            model: model,
+            workspaceId: workspaceId,
+            windowId: 751,
+            frame: CGRect(x: 80, y: 120, width: 720, height: 180),
+            title: "Bottom"
+        )
+
+        let layout = makeNiriOverviewLayout(
+            workspaces: workspaces,
+            windows: [
+                top.handle: top.data,
+                bottom.handle: bottom.data
+            ],
+            snapshots: [
+                workspaceId: makeNiriOverviewSnapshot(
+                    workspaceId: workspaceId,
+                    columns: [[top.handle, bottom.handle]],
+                    preferredHeights: [[420, 180]]
+                )
+            ]
+        )
+
+        guard let topFrame = layout.window(for: top.handle)?.overviewFrame,
+              let bottomFrame = layout.window(for: bottom.handle)?.overviewFrame
+        else {
+            Issue.record("Expected projected Niri windows")
+            return
+        }
+
+        #expect((topFrame.height / bottomFrame.height).isApproximatelyEqual(to: 420.0 / 180.0, tolerance: 0.05))
     }
 
     @Test @MainActor func niriProjectionRebuildsFromMutatedWorkspaceAndEngineStateBeforeRelayout() {
@@ -501,6 +607,10 @@ private func makeNiriOverviewLayout(
             gaps: 8
         )
 
+        fallbackNode.resolvedHeight = 320
+        focusedNode.resolvedHeight = 540
+        relocatedNode.resolvedHeight = 240
+
         model.updateWorkspace(for: moved.handle.id, workspace: targetWorkspaceId)
 
         guard let targetSnapshot = engine.overviewSnapshot(for: targetWorkspaceId),
@@ -524,10 +634,23 @@ private func makeNiriOverviewLayout(
         )
 
         let targetColumns = layout.niriColumnsByWorkspace[targetWorkspaceId] ?? []
+        let sourceFallbackFrame = layout.window(for: fallback.handle)?.overviewFrame
+        let targetFocusedFrame = layout.window(for: focused.handle)?.overviewFrame
+        let targetMovedFrame = layout.window(for: moved.handle)?.overviewFrame
 
         #expect(moveResult?.newFocusNodeId == fallbackNode.id)
         #expect(sourceState.selectedNodeId == fallbackNode.id)
         #expect(inserted)
         #expect(targetColumns.map(\.windowHandles) == [[focused.handle], [moved.handle]])
+        #expect(sourceFallbackFrame != nil)
+        #expect(targetFocusedFrame != nil)
+        #expect(targetMovedFrame != nil)
+        #expect((targetFocusedFrame!.height / targetMovedFrame!.height).isApproximatelyEqual(to: 540.0 / 240.0, tolerance: 0.05))
+    }
+}
+
+private extension CGFloat {
+    func isApproximatelyEqual(to other: CGFloat, tolerance: CGFloat) -> Bool {
+        abs(self - other) <= tolerance
     }
 }

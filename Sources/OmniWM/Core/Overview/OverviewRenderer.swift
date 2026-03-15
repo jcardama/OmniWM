@@ -237,11 +237,15 @@ enum OverviewRenderer {
 
         if let thumbnail {
             let thumbnailRect = frame.insetBy(dx: Metrics.thumbnailInset, dy: Metrics.thumbnailInset)
+            let drawRect = aspectFitRect(
+                contentSize: CGSize(width: thumbnail.width, height: thumbnail.height),
+                in: thumbnailRect
+            )
             context.saveGState()
             let clipPath = CGPath(roundedRect: thumbnailRect, cornerWidth: Metrics.windowCornerRadius - 1, cornerHeight: Metrics.windowCornerRadius - 1, transform: nil)
             context.addPath(clipPath)
             context.clip()
-            context.draw(thumbnail, in: thumbnailRect)
+            context.draw(thumbnail, in: drawRect)
             context.restoreGState()
         }
 
@@ -443,5 +447,20 @@ enum OverviewRenderer {
             result = String(result.dropLast())
         }
         return text
+    }
+
+    static func aspectFitRect(contentSize: CGSize, in bounds: CGRect) -> CGRect {
+        guard contentSize.width > 0, contentSize.height > 0, bounds.width > 0, bounds.height > 0 else {
+            return bounds
+        }
+
+        let scale = min(bounds.width / contentSize.width, bounds.height / contentSize.height)
+        let fittedSize = CGSize(width: contentSize.width * scale, height: contentSize.height * scale)
+        return CGRect(
+            x: bounds.minX + (bounds.width - fittedSize.width) / 2,
+            y: bounds.minY + (bounds.height - fittedSize.height) / 2,
+            width: fittedSize.width,
+            height: fittedSize.height
+        )
     }
 }

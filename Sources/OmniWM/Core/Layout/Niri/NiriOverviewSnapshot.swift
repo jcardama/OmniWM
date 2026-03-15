@@ -3,6 +3,7 @@ import Foundation
 
 struct NiriOverviewTileSnapshot: Equatable {
     let token: WindowToken
+    let preferredHeight: CGFloat
 }
 
 struct NiriOverviewColumnSnapshot: Equatable {
@@ -27,7 +28,12 @@ extension NiriLayoutEngine {
                 index: index,
                 widthWeight: overviewWidthWeight(for: column),
                 preferredWidth: overviewPreferredWidth(for: column),
-                tiles: column.windowNodes.reversed().map { NiriOverviewTileSnapshot(token: $0.token) }
+                tiles: column.windowNodes.reversed().map {
+                    NiriOverviewTileSnapshot(
+                        token: $0.token,
+                        preferredHeight: overviewPreferredHeight(for: $0)
+                    )
+                }
             )
         }
 
@@ -56,6 +62,21 @@ extension NiriLayoutEngine {
             return max(weight, 0.001)
         case let .fixed(width):
             return max(width, 1)
+        }
+    }
+
+    private func overviewPreferredHeight(for window: NiriWindow) -> CGFloat {
+        if let resolvedHeight = window.resolvedHeight, resolvedHeight > 0 {
+            return resolvedHeight
+        }
+        if let frameHeight = window.frame?.height, frameHeight > 0 {
+            return frameHeight
+        }
+        switch window.height {
+        case let .auto(weight):
+            return max(weight, 1)
+        case let .fixed(height):
+            return max(height, 1)
         }
     }
 }
