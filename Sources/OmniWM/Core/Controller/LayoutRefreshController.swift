@@ -773,6 +773,11 @@ import QuartzCore
         }
     }
 
+    func waitForSettledRefreshWorkForTests() async {
+        await waitForRefreshWorkForTests()
+        settleAllAnimationsForTests()
+    }
+
     func resetState() {
         layoutState.activeRefreshTask?.cancel()
         layoutState.activeRefreshTask = nil

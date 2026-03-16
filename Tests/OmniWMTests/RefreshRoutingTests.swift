@@ -57,8 +57,32 @@ private func makeRefreshTestController(
 }
 
 @MainActor
+private func cleanupRefreshTestController(_ controller: WMController) {
+    controller.layoutRefreshController.resetDebugState()
+    controller.layoutRefreshController.resetState()
+    controller.axManager.currentWindowsAsyncOverride = nil
+    controller.axEventHandler.resetDebugStateForTests()
+    controller.axEventHandler.isFullscreenProvider = nil
+}
+
+@MainActor
+private func configureNativeFullscreenTestState(
+    on controller: WMController,
+    visibleWindows: VisibleWindowsStore,
+    isFullscreen: Bool = false
+) {
+    controller.axManager.currentWindowsAsyncOverride = { visibleWindows.value }
+    controller.axEventHandler.isFullscreenProvider = { _ in isFullscreen }
+}
+
+@MainActor
 private func waitForRefreshWork(on controller: WMController) async {
     await controller.layoutRefreshController.waitForRefreshWorkForTests()
+}
+
+@MainActor
+private func waitForSettledRefreshWork(on controller: WMController) async {
+    await controller.layoutRefreshController.waitForSettledRefreshWorkForTests()
 }
 
 @MainActor
@@ -902,18 +926,17 @@ private func prepareNiriState(
 
     @Test @MainActor func nativeFullscreenExitRestoresPriorManagedFrameInNiri() async {
         let controller = makeRefreshTestController()
-        defer { controller.layoutRefreshController.resetState() }
+        defer { cleanupRefreshTestController(controller) }
         let visibleWindows = VisibleWindowsStore([
             (makeRefreshTestWindow(windowId: 2611), getpid(), 2611),
             (makeRefreshTestWindow(windowId: 2612), getpid(), 2612)
         ])
-        controller.axManager.currentWindowsAsyncOverride = { visibleWindows.value }
+        configureNativeFullscreenTestState(on: controller, visibleWindows: visibleWindows)
         controller.enableNiriLayout(maxWindowsPerColumn: 1)
         await waitForRefreshWork(on: controller)
 
         controller.layoutRefreshController.requestFullRescan(reason: .startup)
-        await waitForRefreshWork(on: controller)
-        controller.layoutRefreshController.settleAllAnimationsForTests()
+        await waitForSettledRefreshWork(on: controller)
 
         guard let workspaceId = controller.activeWorkspace()?.id else {
             Issue.record("Missing active workspace")
@@ -942,15 +965,14 @@ private func prepareNiriState(
             (makeRefreshTestWindow(windowId: 2611), getpid(), 2611)
         ]
         controller.layoutRefreshController.requestFullRescan(reason: .activeSpaceChanged)
-        await waitForRefreshWork(on: controller)
+        await waitForSettledRefreshWork(on: controller)
 
         visibleWindows.value = [
             (makeRefreshTestWindow(windowId: 2611), getpid(), 2611),
             (makeRefreshTestWindow(windowId: 2612), getpid(), 2612)
         ]
         controller.layoutRefreshController.requestFullRescan(reason: .activeSpaceChanged)
-        await waitForRefreshWork(on: controller)
-        controller.layoutRefreshController.settleAllAnimationsForTests()
+        await waitForSettledRefreshWork(on: controller)
 
         guard let restoredNode = engine.findNode(for: targetToken),
               let restoredColumn = engine.column(of: restoredNode),
@@ -973,19 +995,17 @@ private func prepareNiriState(
 
     @Test @MainActor func nativeFullscreenExitWithReplacementWindowIdPreservesNiriIdentity() async {
         let controller = makeRefreshTestController()
-        defer { controller.layoutRefreshController.resetState() }
+        defer { cleanupRefreshTestController(controller) }
         let visibleWindows = VisibleWindowsStore([
             (makeRefreshTestWindow(windowId: 2615), getpid(), 2615),
             (makeRefreshTestWindow(windowId: 2616), getpid(), 2616)
         ])
-        controller.axManager.currentWindowsAsyncOverride = { visibleWindows.value }
-        controller.axEventHandler.isFullscreenProvider = { _ in false }
+        configureNativeFullscreenTestState(on: controller, visibleWindows: visibleWindows)
         controller.enableNiriLayout(maxWindowsPerColumn: 1)
         await waitForRefreshWork(on: controller)
 
         controller.layoutRefreshController.requestFullRescan(reason: .startup)
-        await waitForRefreshWork(on: controller)
-        controller.layoutRefreshController.settleAllAnimationsForTests()
+        await waitForSettledRefreshWork(on: controller)
 
         guard let workspaceId = controller.activeWorkspace()?.id else {
             Issue.record("Missing active workspace")
@@ -1013,8 +1033,7 @@ private func prepareNiriState(
             (makeRefreshTestWindow(windowId: 2617), getpid(), 2617)
         ]
         controller.layoutRefreshController.requestFullRescan(reason: .activeSpaceChanged)
-        await waitForRefreshWork(on: controller)
-        controller.layoutRefreshController.settleAllAnimationsForTests()
+        await waitForSettledRefreshWork(on: controller)
 
         guard let replacementEntry = controller.workspaceManager.entry(for: replacementToken),
               let replacementNode = engine.findNode(for: replacementToken),
@@ -1044,11 +1063,12 @@ private func prepareNiriState(
                 WorkspaceConfiguration(name: "1", monitorAssignment: .main, layoutType: .dwindle)
             ]
         )
+        defer { cleanupRefreshTestController(controller) }
         let visibleWindows = VisibleWindowsStore([
             (makeRefreshTestWindow(windowId: 2621), getpid(), 2621),
             (makeRefreshTestWindow(windowId: 2622), getpid(), 2622)
         ])
-        controller.axManager.currentWindowsAsyncOverride = { visibleWindows.value }
+        configureNativeFullscreenTestState(on: controller, visibleWindows: visibleWindows)
         controller.enableDwindleLayout()
         await waitForRefreshWork(on: controller)
 
@@ -1092,12 +1112,12 @@ private func prepareNiriState(
                 WorkspaceConfiguration(name: "1", monitorAssignment: .main, layoutType: .dwindle)
             ]
         )
+        defer { cleanupRefreshTestController(controller) }
         let visibleWindows = VisibleWindowsStore([
             (makeRefreshTestWindow(windowId: 2625), getpid(), 2625),
             (makeRefreshTestWindow(windowId: 2626), getpid(), 2626)
         ])
-        controller.axManager.currentWindowsAsyncOverride = { visibleWindows.value }
-        controller.axEventHandler.isFullscreenProvider = { _ in false }
+        configureNativeFullscreenTestState(on: controller, visibleWindows: visibleWindows)
         controller.enableDwindleLayout()
         await waitForRefreshWork(on: controller)
 
